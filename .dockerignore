@@ -1,0 +1,8 @@
+**
+!pyproject.toml
+!uv.lock
+!e2b_environment.py
+!runner/
+!runner/**
+runner/__pycache__/
+runner/*test*

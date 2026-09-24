@@ -1,0 +1,9 @@
+n_attempts: 1
+n_concurrent_trials: 1
+environment:
+  import_path: e2b_environment:OneHourE2B
+agents:
+  - name: claude-code
+    model_name: anthropic/claude-opus-5-5
+tasks:
+  - path: tasks/coffee-timer

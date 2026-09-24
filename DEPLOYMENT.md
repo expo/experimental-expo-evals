@@ -1,0 +1,154 @@
+# Cloudflare deployment
+
+The web app runs on Workers. D1 stores shared drafts, revisions, and run records.
+GitHub stores committed Harbor task files. R2 holds results and artifacts. Each
+run starts a Cloudflare Container with Python and the pinned Harbor dependencies;
+Harbor creates the agent/verifier sandbox in E2B. Cloudflare Containers require
+an account/plan with Containers enabled. Ordinary Workers cannot spawn Harbor.
+
+This deployment uses a Container for the Harbor coordinator only. The task's
+`environment/Dockerfile` still describes the E2B environment. Neither runs a
+local Expo simulator: the evaluated agent uses EAS Simulator.
+
+## Local setup
+
+From `frontend/`, run `npm ci`, `npm run dev:secrets`, `npm run db:migrate`, then
+`npm run dev`. The ignored `.dev.vars` enables authentication bypass only for
+loopback URLs. D1/R2 data persists under `.wrangler/state/` between restarts.
+Docker is not needed for the editor. Local Containers are disabled in Wrangler's
+`dev.enable_containers` setting. Enabling them also requires a callback origin
+reachable from Docker, such as an authenticated development tunnel or
+`http://host.docker.internal:3000` with suitable host binding.
+
+The app seeds the coffee-timer task on first use. Shared drafts are stored as
+the exact six native file contents; the UI doesn't translate them to another
+eval format. Draft saves do not alter local repository files. The CLI continues
+to read local files, so pull Git changes before running a shared task locally.
+
+## Provision once
+
+Run these from `frontend/` in the intended account:
+
+```sh
+npx wrangler whoami
+npx wrangler d1 create eas-simulator-evals
+npx wrangler r2 bucket create eas-simulator-eval-artifacts
+```
+
+This checkout already points to the Expo account and its `eas-simulator-evals`
+D1 database and `eas-simulator-eval-artifacts` R2 bucket. Run the provisioning
+commands only when deploying to a new account, then update the database ID and
+`account_id` in `wrangler.jsonc`. Keep the R2 bucket private.
+
+Create or select a private GitHub repository with an existing `main` branch.
+Commit the project there through your normal workflow first. Configure
+`GITHUB_REPOSITORY=owner/repository` and `GITHUB_BRANCH` in Wrangler vars. The
+Commit button updates task files only, using GitHub's atomic
+`createCommitOnBranch` operation. It cannot create an empty Git repository.
+Use a fine-grained token restricted to that repository with Contents read/write
+permission as `GITHUB_TOKEN`. Branch protection still applies.
+
+## Company authentication
+
+Create a Cloudflare Access self-hosted application for the app hostname with
+your company's identity provider and employee policy. Set these Wrangler vars:
+
+```text
+APP_ORIGIN=https://<your-app-hostname>
+ACCESS_TEAM_DOMAIN=https://<your-team>.cloudflareaccess.com
+ACCESS_AUD=<the Access application's audience tag>
+LOCAL_DEV=false
+```
+
+The Worker verifies the Access JWT signature, issuer, audience, and email. It
+does not trust an email header alone. Access protects the app's pages, server
+functions, and result downloads. A deployment without the Access configuration
+fails closed with HTTP 403. All authenticated employees can edit and run tasks
+in this first version; there are no per-task roles.
+
+Give `/api/runner-callback/*` its own higher-specificity Access application with
+a Bypass policy so the Python runner can reach it. That endpoint independently
+requires an unguessable per-run Bearer token, stored hashed in D1, and accepts
+only that run's uploads/status. Do not bypass Access for the app or other API
+routes. If using workers.dev as the callback origin, ensure its Access setup
+also permits this callback path; the Worker still authenticates all user routes.
+
+## Secrets and deployment
+
+Set secrets interactively without putting their values in source files:
+
+```sh
+npx wrangler secret put GITHUB_TOKEN
+npx wrangler secret put ANTHROPIC_API_KEY
+npx wrangler secret put E2B_API_KEY
+npx wrangler secret put EXPO_TOKEN
+npx wrangler secret put TYPESAFE_API_KEY
+# Optional, for Codex evals:
+npx wrangler secret put OPENAI_API_KEY
+```
+
+`ASSIST_MODEL` defaults to `claude-opus-5-5`. The assistant uses Anthropic's API
+and returns proposed file changes only. The eval agent/model remains selectable
+per run. AI calls and evals consume provider usage.
+
+Start Docker, then deploy:
+
+```sh
+npm run check
+npm test
+npm run db:migrate:remote
+npm run deploy
+```
+
+`npm run deploy` builds the TanStack app, then runs `wrangler deploy`. Wrangler
+builds/uploads the Container image using the repository root as its context.
+The root `.dockerignore` permits only pinned dependencies, the E2B adapter, and
+runner source; it excludes `.env`, `.dev.vars`, local jobs, and Git metadata.
+No credentials are baked into the image.
+
+After deployment, verify company sign-in, save/reload a draft, commit to the
+chosen branch, and launch one eval. Its result should remain visible after the
+runner stops. Browser/Node tests and a local image build do not prove a live
+Cloudflare/E2B run; test that separately after the deployment is configured.
+
+## Saving and conflicts
+
+Each save sends the D1 revision the editor loaded. A database compare-and-swap
+rejects stale updates and saves all file contents plus revision history in one
+transaction. It never silently overwrites another person's saved draft.
+
+Commit reserves that draft temporarily, reads the current Git branch, and
+compares base, draft, and remote file contents. Changes to different files merge
+automatically. Edits to the same file require the user to choose Draft, Git, or
+edited content. Resolutions are tied to the displayed Git head. If the branch
+changes again, the app checks again. The final GitHub write includes the expected
+head SHA, so it cannot force past a concurrent commit. If the files already
+match Git, the app records the existing commit without adding an empty commit.
+
+D1 and GitHub cannot share a transaction. If Git accepts a commit and the D1
+update fails, the UI reports the commit SHA. Retrying reconciles the remote files;
+the task is not considered runnable until D1 records its committed revision.
+
+## Run lifecycle
+
+The app stores a run's commit SHA and file snapshot before starting its Container.
+Only one run can be queued/running at a time, enforced by a D1 unique index.
+Container storage also records the accepted run ID to avoid launching it twice.
+If startup acknowledgement is lost, the app keeps the slot reserved while it
+waits for a callback; it does not automatically retry a potentially billable run.
+
+The runner launches native `harbor run` with one attempt, one concurrent trial,
+and E2B. It uploads results to R2 and updates D1 before completion. Container
+disk is disposable, so completed results never rely on it. Files have per-file
+and total upload limits; credentials and hidden files are excluded. The runner
+has a one-hour timeout. A five-minute scheduled check marks runs without a final
+callback as interrupted after 80 minutes. It does not rerun them.
+
+Harbor owns execution and grading. This app adds editing, persistence,
+authentication, and process supervision. JEV grades the recorded trace; its
+score is not independent proof of visual or interactive correctness.
+
+References: [TanStack on Workers](https://developers.cloudflare.com/workers/framework-guides/web-apps/tanstack-start/),
+[Cloudflare Containers](https://developers.cloudflare.com/containers/get-started/),
+[Access JWT validation](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/),
+[Harbor task format](https://docs.harborframework.com/core-concepts/tasks/overview).
