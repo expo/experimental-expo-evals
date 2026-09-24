@@ -47,6 +47,8 @@ Commit button updates task files only, using GitHub's atomic
 `createCommitOnBranch` operation. It cannot create an empty Git repository.
 Use a fine-grained token restricted to that repository with Contents read/write
 permission as `GITHUB_TOKEN`. Branch protection still applies.
+The private repository for this checkout is
+[`expo/eas-simulator-evals`](https://github.com/expo/eas-simulator-evals).
 
 ## Company authentication
 
@@ -72,6 +74,12 @@ requires an unguessable per-run Bearer token, stored hashed in D1, and accepts
 only that run's uploads/status. Do not bypass Access for the app or other API
 routes. If using workers.dev as the callback origin, ensure its Access setup
 also permits this callback path; the Worker still authenticates all user routes.
+
+Wrangler's standard OAuth login may not allow Access administration. For API
+setup, use an account-scoped `CF_ACCESS_API_TOKEN` with Access Apps and Policies
+Write and Access Organizations Read. Keep it in the ignored root `.env` during
+setup only; it is not a Worker secret. Access can also be configured in the
+Cloudflare dashboard.
 
 ## Secrets and deployment
 
