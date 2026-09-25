@@ -38,7 +38,7 @@ class RunnerTests(unittest.TestCase):
                 service.validate_payload(value)
 
     def test_launch_is_idempotent_and_rejects_changed_payload(self):
-        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"RUN_ID": "run-123"}), patch.object(service.threading.Thread, "start") as start:
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"RUN_ID": "run-123", "CALLBACK_URL": "https://example.test/callback", "CALLBACK_TOKEN": "test-callback-secret"}), patch.object(service.threading.Thread, "start") as start:
             runner = service.Runner(Path(temporary))
             value = payload()
             self.assertEqual(runner.accept(value)["status"], "running")
@@ -47,6 +47,32 @@ class RunnerTests(unittest.TestCase):
             value["model"] = "other"
             with self.assertRaises(ValueError):
                 runner.accept(value)
+
+    def test_missing_configuration_rejects_before_accepting_or_starting_thread(self):
+        configured = {"RUN_ID": "run-123", "CALLBACK_URL": "https://example.test/callback", "CALLBACK_TOKEN": "test-callback-secret"}
+        for name in configured:
+            for empty in (None, "", "  "):
+                values = {**configured, name: empty}
+                values = {key: value for key, value in values.items() if value is not None}
+                with self.subTest(name=name, empty=empty), patch.dict(os.environ, values, clear=True), patch.object(service.threading.Thread, "start") as start, patch("builtins.print"):
+                    runner = service.Runner()
+                    with self.assertRaisesRegex(ValueError, name):
+                        runner.accept(payload())
+                    start.assert_not_called()
+                    self.assertIsNone(runner.run_id)
+                    self.assertEqual(runner.status, "error")
+                    self.assertIn(name, runner.snapshot()["error"])
+
+    def test_callback_initialization_failure_records_error_without_launching_cli(self):
+        configured = {"RUN_ID": "run-123", "CALLBACK_URL": "https://example.test/callback", "CALLBACK_TOKEN": "test-callback-secret"}
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, configured), patch.object(service, "Callback", side_effect=RuntimeError("failed at https://example.test/callback with test-callback-secret")), patch.object(service.subprocess, "Popen") as launch, patch("builtins.print") as log:
+            runner = service.Runner(Path(temporary))
+            runner.status = "running"
+            runner.execute(payload())
+            self.assertEqual(runner.status, "error")
+            launch.assert_not_called()
+            self.assertEqual(runner.snapshot()["error"], "failed at [redacted] with [redacted]")
+            self.assertNotIn("test-callback-secret", str(log.call_args_list))
 
     def test_uses_e2b_and_one_trial(self):
         config = service.make_config(payload())
@@ -115,7 +141,7 @@ trial.mkdir(parents=True)
 print('model key=test-model-secret')
 """)
             executable.chmod(0o755)
-            with patch.dict(os.environ, {"HARBOR_BIN": str(executable), "ANTHROPIC_API_KEY": "test-model-secret", "CALLBACK_URL": "https://example.test/callback", "CALLBACK_TOKEN": "test-callback-secret"}), patch.object(service.Callback, "send") as send:
+            with patch.dict(os.environ, {"HARBOR_BIN": str(executable), "RUN_ID": "run-123", "ANTHROPIC_API_KEY": "test-model-secret", "CALLBACK_URL": "https://example.test/callback", "CALLBACK_TOKEN": "test-callback-secret"}), patch.object(service.Callback, "send") as send:
                 runner = service.Runner(base / "work")
                 runner.execute(payload())
                 self.assertEqual(runner.status, "passed")
@@ -131,6 +157,19 @@ print('model key=test-model-secret')
             callback = service.Callback()
             self.assertEqual(callback.url, "https://evals.example/api/runner-callback/run-123")
             self.assertNotIn("callbackUrl", service.make_config(payload()))
+
+    def test_callback_uses_identifiable_user_agent_for_status_and_artifact_requests(self):
+        with patch.dict(os.environ, {"CALLBACK_URL": "https://evals.example/api/runner-callback/run-123", "CALLBACK_TOKEN": "callback-secret"}), patch.object(service, "urlopen") as send:
+            callback = service.Callback()
+            callback.send({"status": "running"})
+            callback.send(path="run.log", data=b"output")
+            for call in send.call_args_list:
+                request = call.args[0]
+                self.assertEqual(request.get_header("User-agent"), "eas-simulator-evals/1.0")
+                self.assertEqual(request.get_header("Accept"), "application/json")
+                self.assertEqual(request.get_header("Authorization"), "Bearer callback-secret")
+            self.assertEqual(send.call_args_list[0].args[0].method, "POST")
+            self.assertEqual(send.call_args_list[1].args[0].method, "PUT")
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ export type RunSummary = {
   agent: string;
   model: string;
   startedAt: string;
-  status: "running" | "passed" | "failed" | "error" | "interrupted";
+  status: "queued" | "running" | "passed" | "failed" | "error" | "interrupted";
   score: number | null;
   durationSec: number | null;
   costUsd: number | null;

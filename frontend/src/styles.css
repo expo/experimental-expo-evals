@@ -361,6 +361,7 @@ h2 {
   background: #fbefeb;
   color: #a65442;
 }
+.badge.queued,
 .badge.running {
   background: #f6f1df;
   color: #8a743a;

@@ -100,7 +100,9 @@ export function TaskEditor({
   const uncommitted =
     !document?.baseCommit || document.committedRevision !== document.revision;
   const newerDraft = !!task && !!document && task.revision > document.revision;
-  const running = data.runs.some((run) => run.status === "running");
+  const running = data.runs.some(
+    (run) => run.status === "queued" || run.status === "running",
+  );
   const agentConfigured =
     agent === "claude-code"
       ? data.settings.claudeConfigured
@@ -878,15 +880,17 @@ export function TaskEditor({
           </button>
         </div>
         <p className="launch-note">
-          {dirty || uncommitted
-            ? "Save and commit all changes before running this task."
-            : running
-              ? "Another eval is running. Follow its progress in Runs."
-              : !data.settings.runnerConfigured
-                ? "Configure the Harbor runner and E2B, Expo, and TypeSafe credentials to run evals."
-                : !agentConfigured
-                  ? `Add ${agent === "codex" ? "OpenAI" : "Anthropic"} credentials to run this agent.`
-                  : `Runs task revision ${document?.revision} from commit ${document?.baseCommit?.slice(0, 7)}. Model and service usage apply.`}
+          {data.settings.local
+            ? "The local web preview does not start Harbor containers. Run evals from the deployed dashboard, or use the native Harbor CLI locally."
+            : dirty || uncommitted
+              ? "Save and commit all changes before running this task."
+              : running
+                ? "Another eval is queued or running. Follow its progress in Runs."
+                : !data.settings.runnerConfigured
+                  ? "Configure the Harbor runner and E2B, Expo, and TypeSafe credentials to run evals."
+                  : !agentConfigured
+                    ? `Add ${agent === "codex" ? "OpenAI" : "Anthropic"} credentials to run this agent.`
+                    : `Runs task revision ${document?.revision} from commit ${document?.baseCommit?.slice(0, 7)}. Model and service usage apply.`}
         </p>
         <p className="launch-note">
           Agent and model apply to this run only. Starting a run does not change

@@ -27,7 +27,7 @@ TASK_FILES = {
     "environment/setup.sh", "tests/test.sh", "tests/rubric.toml",
 }
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif"}
-SECRET_NAMES = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "E2B_API_KEY", "EXPO_TOKEN", "TYPESAFE_API_KEY", "CALLBACK_TOKEN")
+SECRET_NAMES = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "E2B_API_KEY", "EXPO_TOKEN", "TYPESAFE_API_KEY", "CALLBACK_TOKEN", "CALLBACK_URL")
 
 
 def now():
@@ -220,7 +220,12 @@ class Callback:
     def send(self, payload=None, path=None, data=None):
         url = self.url + ("?path=" + quote(path, safe="") if path else "")
         body = data if path else json.dumps(redact(payload)).encode()
-        headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/octet-stream" if path else "application/json"}
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/octet-stream" if path else "application/json",
+            "User-Agent": "eas-simulator-evals/1.0",
+            "Accept": "application/json",
+        }
         # The trusted Worker sets this URL. Never accept a destination in the run payload.
         request = Request(url, data=body, headers=headers, method="PUT" if path else "POST")
         for attempt in range(4):
@@ -243,9 +248,28 @@ class Runner:
         self.run_id = None
         self.digest = None
         self.status = "idle"
+        self.last_error = None
+
+    def snapshot(self):
+        return {"runId": self.run_id, "status": self.status, "error": redact(self.last_error)}
+
+    def record_error(self, message):
+        self.last_error = redact(str(message))[:2000]
+        self.status = "error"
+        print(json.dumps({"event": "runner_error", **self.snapshot()}), flush=True)
+
+    def validate_environment(self):
+        missing = [name for name in ("RUN_ID", "CALLBACK_URL", "CALLBACK_TOKEN") if not os.environ.get(name, "").strip()]
+        if missing:
+            raise ValueError("Missing runner configuration: " + ", ".join(missing) + ".")
 
     def accept(self, payload):
         validate_payload(payload)
+        try:
+            self.validate_environment()
+        except ValueError as error:
+            self.record_error(error)
+            raise
         if payload["runId"] != os.environ.get("RUN_ID"):
             raise ValueError("Run ID does not match this container.")
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
@@ -253,16 +277,20 @@ class Runner:
             if self.run_id:
                 if self.run_id != payload["runId"] or self.digest != digest:
                     raise ValueError("This container already accepted a different run.")
-                return {"runId": self.run_id, "status": self.status}
+                return self.snapshot()
             self.run_id, self.digest, self.status = payload["runId"], digest, "running"
+            self.last_error = None
             threading.Thread(target=self.execute, args=(payload,), daemon=True).start()
-        return {"runId": self.run_id, "status": self.status}
+        return self.snapshot()
 
     def execute(self, payload):
         started_at, exit_code, error = now(), -1, None
         base = self.root / payload["runId"]
-        callback = Callback()
+        callback = None
         try:
+            self.validate_environment()
+            callback = Callback()
+            print(json.dumps({"event": "runner_execution_started", "runId": payload["runId"]}), flush=True)
             base.mkdir(parents=True, exist_ok=False)
             for file in payload["files"]:
                 destination = base / file["path"]
@@ -286,17 +314,21 @@ class Runner:
                     error = "Run exceeded the one-hour limit and was stopped. The E2B sandbox also has a one-hour lifetime."
         except Exception as exception:
             error = str(exception)
+            self.record_error(error)
+        if callback is None:
+            return
         try:
             detail = build_detail(base, payload, started_at, exit_code, error)
+            if detail["error"] and not self.last_error:
+                self.record_error(detail["error"])
             for relative, data, image in output_files(base, payload):
                 callback.send(path=relative, data=data)
                 detail["artifacts"].append({"path": relative, "name": PurePosixPath(relative).name, "image": image})
             callback.send({"runId": payload["runId"], "status": "failed" if detail["status"] == "error" else "completed", "detail": detail})
             self.status = detail["status"]
         except Exception as exception:
-            self.status = "error"
             # Do not print URLs/tokens or a traceback containing request payloads.
-            print(redact(f"Result persistence failed: {exception}"), flush=True)
+            self.record_error(f"Result persistence failed: {exception}")
 
 
 runner = Runner()
@@ -317,11 +349,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            return self.respond(200, {"ok": True})
+            return self.respond(200, {"ok": True, **runner.snapshot()})
         if not self.authorized():
             return self.respond(401, {"error": "Unauthorized."})
         if self.path == "/status":
-            return self.respond(200, {"runId": runner.run_id, "status": runner.status})
+            return self.respond(200, runner.snapshot())
         self.respond(404, {"error": "Not found."})
 
     def do_POST(self):

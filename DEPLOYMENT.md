@@ -199,9 +199,13 @@ the task is not considered runnable until D1 records its committed revision.
 
 The app stores a run's commit SHA and file snapshot before starting its Container.
 Only one run can be queued/running at a time, enforced by a D1 unique index.
+The Container limit is two so replacement instances can start while Cloudflare
+finishes retiring the previous instance. The D1 limit still permits only one eval.
 Container storage also records the accepted run ID to avoid launching it twice.
 If startup acknowledgement is lost, the app keeps the slot reserved while it
 waits for a callback; it does not automatically retry a potentially billable run.
+Failures confirmed before dispatch are recorded immediately and release the slot.
+Completed results trigger a container destroy after they are stored durably.
 
 The runner launches native `harbor run` with one attempt, one concurrent trial,
 and E2B. It uploads results to R2 and updates D1 before completion. Container

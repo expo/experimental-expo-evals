@@ -190,6 +190,8 @@ test("runs require committed revision, preserve immutable files, and allow only 
   f.committed();
   const { id } = await f.start();
   assert.equal(f.payload!.commitSha, "a".repeat(40));
+  assert.equal((await getRun(f.ctx, id)).status, "queued");
+  assert.equal((await listRuns(f.ctx))[0].status, "queued");
   const snapshot = f.sql
     .prepare("SELECT files_json,callback_hash FROM runs WHERE id=?")
     .get(id)!;
@@ -211,6 +213,8 @@ test("unknown capability and changed terminal callbacks cannot modify completed 
     401,
   );
   assert.equal((await f.callback(id, { status: "running" })).status, 200);
+  assert.equal((await getRun(f.ctx, id)).status, "running");
+  assert.equal((await listRuns(f.ctx))[0].status, "running");
   const response = await f.callback(id, {
     status: "completed",
     detail: detail(id),
@@ -251,7 +255,10 @@ test("artifact uploads reject traversal, redact credentials, and stay immutable 
       await f.upload(
         id,
         "jobs/trial/result.json",
-        JSON.stringify({ value: "test-expo-secret", key: "test-app-private-key" }),
+        JSON.stringify({
+          value: "test-expo-secret",
+          key: "test-app-private-key",
+        }),
       )
     ).status,
     200,
@@ -261,7 +268,10 @@ test("artifact uploads reject traversal, redact credentials, and stay immutable 
       await f.upload(
         id,
         "jobs/trial/result.json",
-        JSON.stringify({ value: "test-expo-secret", key: "test-app-private-key" }),
+        JSON.stringify({
+          value: "test-expo-secret",
+          key: "test-app-private-key",
+        }),
       )
     ).status,
     200,
@@ -273,7 +283,10 @@ test("artifact uploads reject traversal, redact credentials, and stay immutable 
   const response = await artifactResponse(f.ctx, id, "jobs/trial/result.json");
   assert.match(response.headers.get("content-disposition")!, /^attachment/);
   assert.equal(response.headers.get("x-content-type-options"), "nosniff");
-  assert.deepEqual(JSON.parse(await response.text()), { value: "[redacted]", key: "[redacted]" });
+  assert.deepEqual(JSON.parse(await response.text()), {
+    value: "[redacted]",
+    key: "[redacted]",
+  });
   f.sql.close();
 });
 
@@ -293,7 +306,7 @@ test("uncertain startup keeps the active slot until timeout watchdog", async () 
     },
   );
   let run = await getRun(f.ctx, id);
-  assert.equal(run.status, "running");
+  assert.equal(run.status, "queued");
   assert.match(run.error!, /unconfirmed/);
   assert.ok(!run.error!.includes("test-expo-secret"));
   await assert.rejects(f.start(), /Another eval/);
@@ -307,10 +320,41 @@ test("uncertain startup keeps the active slot until timeout watchdog", async () 
   f.sql.close();
 });
 
+test("confirmed failure before dispatch revokes its capability and frees the active slot", async () => {
+  const f = await fixture();
+  f.committed();
+  const { id } = await startRun(
+    f.ctx,
+    {
+      taskId: "coffee-timer",
+      revision: 1,
+      agent: "claude-code",
+      model: "model",
+    },
+    async (env, payload, token) => {
+      await f.launch(env, payload, token);
+      return {
+        runId: payload.runId,
+        status: "failed",
+        error: "Container unavailable test-expo-secret",
+      };
+    },
+  );
+  const run = await getRun(f.ctx, id);
+  assert.equal(run.status, "error");
+  assert.match(run.error!, /could not start.*Container unavailable/);
+  assert.ok(!run.error!.includes("test-expo-secret"));
+  assert.equal((await f.callback(id, { status: "running" })).status, 401);
+  const next = await f.start();
+  assert.notEqual(next.id, id);
+  f.sql.close();
+});
+
 test("R2 failures keep the run active and callback retry finishes persistence", async () => {
   const f = await fixture();
   f.committed();
   const { id } = await f.start();
+  await f.callback(id, { status: "running" });
   const put = f.bucket.put;
   f.bucket.put = async () => {
     throw new Error("R2 temporarily unavailable");
@@ -338,5 +382,15 @@ test("expired callback cannot reopen or upload to an old run", async () => {
     .run(new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(), id);
   assert.equal((await f.callback(id, { status: "running" })).status, 401);
   assert.equal((await f.upload(id, "source.ts", "text")).status, 401);
+  f.sql.close();
+});
+
+test("local preview rejects runs before creating jobs or dispatching containers", async () => {
+  const f = await fixture();
+  f.committed();
+  f.ctx.env.LOCAL_DEV = "true";
+  await assert.rejects(f.start(), /deployed dashboard.*native Harbor CLI/);
+  assert.equal(f.payload, null);
+  assert.deepEqual(await listRuns(f.ctx), []);
   f.sql.close();
 });

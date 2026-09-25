@@ -122,9 +122,7 @@ function summary(run: RunRow): RunSummary & { commitSha: string } {
     agent: run.agent,
     model: run.model,
     startedAt: run.created_at,
-    status: active(run.status)
-      ? "running"
-      : (run.status as RunSummary["status"]),
+    status: run.status as RunSummary["status"],
     score: finite(detail.score),
     durationSec: finite(detail.durationSec),
     costUsd: finite(detail.costUsd),
@@ -181,6 +179,10 @@ export async function startRun(
   input: { taskId: string; revision: number; agent: Agent; model: string },
   launch?: Launcher,
 ) {
+  if (ctx.env.LOCAL_DEV === "true")
+    throw new Error(
+      "The local web preview cannot start Harbor containers. Run evals from the deployed dashboard, or use the native Harbor CLI locally.",
+    );
   if (
     !input ||
     !validId(input.taskId) ||
@@ -243,7 +245,7 @@ export async function startRun(
   try {
     const launcher =
       launch ?? (await import("./runner-container")).launchContainer;
-    await launcher(
+    const result = await launcher(
       ctx.env,
       {
         runId: id,
@@ -255,6 +257,32 @@ export async function startRun(
       },
       token,
     );
+    if (
+      result &&
+      typeof result === "object" &&
+      "status" in result &&
+      result.status === "failed"
+    ) {
+      if (
+        !("runId" in result) ||
+        result.runId !== id ||
+        !("error" in result) ||
+        typeof result.error !== "string"
+      ) {
+        throw new Error("Runner returned an invalid launch result.");
+      }
+      // A structured failure is only returned before POST /run is dispatched.
+      // Revoke its unused capability and allow the next run immediately.
+      await ctx.env.DB.prepare(
+        "UPDATE runs SET status='error',error=?,callback_hash=NULL,updated_at=? WHERE id=? AND status='queued'",
+      )
+        .bind(
+          redact(ctx.env, `Runner could not start: ${result.error}`),
+          new Date().toISOString(),
+          id,
+        )
+        .run();
+    }
   } catch (error) {
     // A timeout might happen after /run was accepted. Keep the slot reserved until
     // an authenticated callback or the watchdog resolves that uncertain outcome.
@@ -347,21 +375,17 @@ function normalizedDetail(
     costUsd: finite(item?.costUsd),
     log: typeof item?.log === "string" ? item.log.slice(-60_000) : "",
     error,
-    criteria: (item?.criteria || [])
-      .slice(0, 100)
-      .map((criterion) => ({
-        name: String(criterion.name || "").slice(0, 200),
-        description: String(criterion.description || "").slice(0, 4000),
-        score: finite(criterion.score) ?? 0,
-        probability: finite(criterion.probability),
-      })),
-    steps: (item?.steps || [])
-      .slice(0, 500)
-      .map((step) => ({
-        id: String(step.id).slice(0, 100),
-        role: String(step.role).slice(0, 30),
-        text: String(step.text).slice(0, 40_000),
-      })),
+    criteria: (item?.criteria || []).slice(0, 100).map((criterion) => ({
+      name: String(criterion.name || "").slice(0, 200),
+      description: String(criterion.description || "").slice(0, 4000),
+      score: finite(criterion.score) ?? 0,
+      probability: finite(criterion.probability),
+    })),
+    steps: (item?.steps || []).slice(0, 500).map((step) => ({
+      id: String(step.id).slice(0, 100),
+      role: String(step.role).slice(0, 30),
+      text: String(step.text).slice(0, 40_000),
+    })),
     artifacts: (item?.artifacts || [])
       .slice(0, 400)
       .filter((file) => file && safeArtifactPath(file.path))

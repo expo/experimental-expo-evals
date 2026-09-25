@@ -6,6 +6,7 @@ import {
   Check,
   ChevronRight,
   Circle,
+  Clock3,
   Coffee,
   FileText,
   FlaskConical,
@@ -163,7 +164,9 @@ function App() {
   }
 
   const task = data.tasks.find((item) => item.id === taskId);
-  const activeRun = data.runs.find((run) => run.status === "running");
+  const activeRun = data.runs.find(
+    (run) => run.status === "queued" || run.status === "running",
+  );
   const completed = data.runs.filter((run) =>
     ["passed", "failed"].includes(run.status),
   ).length;
@@ -213,7 +216,9 @@ function App() {
           <span className="workspace-user">{data.user}</span>
           {!data.settings.local && (
             <form action="/logout" method="post">
-              <button className="button" disabled={mutationPending}>Sign out</button>
+              <button className="button" disabled={mutationPending}>
+                Sign out
+              </button>
             </form>
           )}
         </div>
@@ -237,7 +242,9 @@ function App() {
           </button>
           <span className="tabs-note">
             {activeRun
-              ? "An eval is running"
+              ? activeRun.status === "queued"
+                ? "An eval is queued"
+                : "An eval is running"
               : `${completed} completed ${completed === 1 ? "run" : "runs"}`}
           </span>
         </nav>
@@ -411,11 +418,13 @@ function Status({
   const Icon =
     status === "passed"
       ? Check
-      : status === "running"
-        ? LoaderCircle
-        : status === "failed" || status === "error"
-          ? X
-          : Circle;
+      : status === "queued"
+        ? Clock3
+        : status === "running"
+          ? LoaderCircle
+          : status === "failed" || status === "error"
+            ? X
+            : Circle;
   return (
     <span className={`badge ${status} ${small ? "small" : ""}`}>
       <Icon size={13} className={status === "running" ? "spin" : ""} />
@@ -575,9 +584,11 @@ function RunResults({
             <div className="empty compact">
               <Circle size={23} />
               <p>
-                {run.status === "running"
-                  ? "The judge scores this task after the agent finishes."
-                  : "This run has no JEV criterion details."}
+                {run.status === "queued"
+                  ? "Queued. Waiting for the Harbor runner to start."
+                  : run.status === "running"
+                    ? "The judge scores this task after the agent finishes."
+                    : "This run has no JEV criterion details."}
               </p>
             </div>
           )}
@@ -648,7 +659,12 @@ function RunResults({
         </div>
       )}
       {tab === "log" && (
-        <pre className="log">{run.log || "Waiting for Harbor output…"}</pre>
+        <pre className="log">
+          {run.log ||
+            (run.status === "queued"
+              ? "Queued. Waiting for the Harbor runner to start…"
+              : "Waiting for Harbor output…")}
+        </pre>
       )}
     </>
   );

@@ -16,7 +16,7 @@ export default {
       if (response.ok && response.headers.get('x-run-complete') === '1') {
         // Results are already durable before asking the disposable runner to stop.
         const runners = env.RUNNERS as unknown as DurableObjectNamespace<HarborRunner>;
-        execution.waitUntil(runners.get(runners.idFromName(callback[1])).stop().catch(() => {}));
+        execution.waitUntil(runners.get(runners.idFromName(callback[1])).destroy().catch(() => {}));
       }
       return response;
     }
@@ -26,6 +26,19 @@ export default {
     try { user = await authenticate(request, env); }
     catch (error) { return authenticationFailure(request, error); }
     if (!sameOriginMutation(request)) return new Response('Cross-origin writes are not allowed', { status: 403 });
+    const runnerState = /^\/api\/runner-state\/(run-[a-f0-9-]+)$/.exec(url.pathname);
+    if (runnerState && ['GET', 'DELETE'].includes(request.method)) {
+      const exists = await env.DB.prepare('SELECT id,status FROM runs WHERE id=?').bind(runnerState[1]).first<{ id: string; status: string }>();
+      if (!exists) return new Response('Run not found', { status: 404 });
+      const runners = env.RUNNERS as unknown as DurableObjectNamespace<HarborRunner>;
+      const runner = runners.get(runners.idFromName(runnerState[1]));
+      if (request.method === 'DELETE') {
+        if (['queued', 'running'].includes(exists.status)) return new Response('The run is still active', { status: 409 });
+        await runner.destroy();
+        return Response.json({ stopped: true }, { headers: { 'Cache-Control': 'no-store' } });
+      }
+      return Response.json(await runner.inspect(), { headers: { 'Cache-Control': 'no-store' } });
+    }
     const response = await requestContext.run({ env, user }, () => handle(request));
     const headers = new Headers(response.headers);
     headers.set('Cache-Control', 'no-store');

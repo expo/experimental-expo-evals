@@ -58,7 +58,7 @@
       "class_name": "HarborRunner",
       "image": "../runner/Dockerfile",
       "image_build_context": "..",
-      "max_instances": 1,
+      "max_instances": 2,
       "instance_type": "basic"
     }
   ],
