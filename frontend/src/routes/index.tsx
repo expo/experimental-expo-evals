@@ -211,6 +211,11 @@ function App() {
             <span className="context-divider">/</span> {data.settings.branch}
           </span>
           <span className="workspace-user">{data.user}</span>
+          {!data.settings.local && (
+            <form action="/logout" method="post">
+              <button className="button" disabled={mutationPending}>Sign out</button>
+            </form>
+          )}
         </div>
         <nav className="tabs" aria-label="Workspace sections">
           <button

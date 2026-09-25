@@ -76,6 +76,8 @@ export async function assistDraft(
   const secrets = [
     ctx.env.GITHUB_TOKEN,
     ctx.env.GITHUB_APP_PRIVATE_KEY,
+    ctx.env.DASHBOARD_PASSWORD,
+    ctx.env.SESSION_SECRET,
     ctx.env.ANTHROPIC_API_KEY,
     ctx.env.E2B_API_KEY,
     ctx.env.EXPO_TOKEN,

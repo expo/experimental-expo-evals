@@ -22,7 +22,8 @@ npm run dev
 Open **http://127.0.0.1:3000**. Local development runs real Workers bindings with
 D1 and R2 emulated on disk under ignored `.wrangler/`. `dev:secrets` copies only
 known API credentials from the root `.env` into ignored `.dev.vars`, without
-printing them. Production uses Wrangler secrets and Cloudflare Access.
+printing them. Production uses Wrangler secrets and a shared username/password
+login. Cloudflare Access is an optional upgrade.
 
 Edit the **Task prompt**, **Setup script**, or **Verifier**. Verifier includes
 both the JEV `rubric.toml` and the small RewardKit `test.sh` bridge. Configuration
@@ -53,8 +54,8 @@ initial bundled example after changing its local files, use `npm run seed:sync`.
 This does not overwrite existing D1 drafts.
 
 See [Cloudflare deployment](DEPLOYMENT.md) for provisioning, authentication,
-secrets, and Wrangler commands. Production denies access until company sign-in
-is configured. Local container execution is disabled by default so editing and
+secrets, and Wrangler commands. Production requires a configured login.
+Local container execution is disabled by default so editing and
 AI assistance do not require Docker.
 
 ```sh

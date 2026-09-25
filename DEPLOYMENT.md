@@ -53,6 +53,10 @@ The private repository for this checkout is
 
 ## GitHub bot
 
+This deployment uses the private
+[`davidmokos-eas-evals`](https://github.com/settings/apps/davidmokos-eas-evals)
+app, installed only on `davidmokos/eas-simulator-evals`.
+
 Register a private GitHub App under the account that owns the repository. Give
 it repository **Contents: read and write**; Metadata read is included by GitHub.
 Disable webhooks and leave user authorization callbacks empty. Install it on
@@ -85,7 +89,22 @@ Harbor runner.
 See [GitHub App registration](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app)
 and [installation authentication](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation).
 
-## Company authentication
+## Dashboard login
+
+The current deployment uses a shared username/password login. Set
+`DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD`, and a random `SESSION_SECRET` as
+Worker secrets. Use a strong password and at least 32 random bytes for the
+session secret. The login creates a signed, HttpOnly cookie that expires after
+12 hours. Sign out clears that cookie. Every signed-in user has the same editor
+and runner permissions, and revisions use the shared username as their author.
+
+The initial admin credentials are in the ignored local
+`work/dashboard-login.txt` and root `.env`. They are never committed. Rotate the
+password by updating its Worker secret; rotate `SESSION_SECRET` to invalidate
+existing sessions. The app denies access if no authentication method is
+configured.
+
+## Optional company authentication
 
 Create a Cloudflare Access self-hosted application for the app hostname with
 your company's identity provider and employee policy. Set these Wrangler vars:
@@ -99,8 +118,8 @@ LOCAL_DEV=false
 
 The Worker verifies the Access JWT signature, issuer, audience, and email. It
 does not trust an email header alone. Access protects the app's pages, server
-functions, and result downloads. A deployment without the Access configuration
-fails closed with HTTP 403. All authenticated employees can edit and run tasks
+functions, and result downloads. Configured Access takes precedence over the
+shared login. All authenticated employees can edit and run tasks
 in this first version; there are no per-task roles.
 
 Give `/api/runner-callback/*` its own higher-specificity Access application with
@@ -123,6 +142,9 @@ Set secrets interactively without putting their values in source files:
 ```sh
 # Only when using a personal token instead of the GitHub App above:
 # npx wrangler secret put GITHUB_TOKEN
+npx wrangler secret put DASHBOARD_USERNAME
+npx wrangler secret put DASHBOARD_PASSWORD
+npx wrangler secret put SESSION_SECRET
 npx wrangler secret put ANTHROPIC_API_KEY
 npx wrangler secret put E2B_API_KEY
 npx wrangler secret put EXPO_TOKEN
@@ -150,7 +172,7 @@ The root `.dockerignore` permits only pinned dependencies, the E2B adapter, and
 runner source; it excludes `.env`, `.dev.vars`, local jobs, and Git metadata.
 No credentials are baked into the image.
 
-After deployment, verify company sign-in, save/reload a draft, commit to the
+After deployment, verify sign-in, save/reload a draft, commit to the
 chosen branch, and launch one eval. Its result should remain visible after the
 runner stops. Browser/Node tests and a local image build do not prove a live
 Cloudflare/E2B run; test that separately after the deployment is configured.

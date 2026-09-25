@@ -1,6 +1,6 @@
 import { createStartHandler, defaultStreamHandler } from '@tanstack/react-start/server';
 import { requestContext } from './lib/cloud-context';
-import { authenticate, sameOriginMutation } from './lib/cloud-auth';
+import { authenticate, authenticationFailure, authenticationRoute, sameOriginMutation } from './lib/cloud-auth';
 import { expireStaleRuns, runnerCallback } from './lib/cloud-runs';
 import type { CloudEnv } from './lib/cloud-types';
 import type { HarborRunner } from './lib/runner-container';
@@ -20,11 +20,16 @@ export default {
       }
       return response;
     }
+    const login = await authenticationRoute(request, env);
+    if (login) return login;
     let user: string;
     try { user = await authenticate(request, env); }
-    catch (error) { return new Response(error instanceof Error ? error.message : 'Sign-in required', { status: 403, headers: { 'Cache-Control': 'no-store' } }); }
+    catch (error) { return authenticationFailure(request, error); }
     if (!sameOriginMutation(request)) return new Response('Cross-origin writes are not allowed', { status: 403 });
-    return requestContext.run({ env, user }, () => handle(request));
+    const response = await requestContext.run({ env, user }, () => handle(request));
+    const headers = new Headers(response.headers);
+    headers.set('Cache-Control', 'no-store');
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
   },
   async scheduled(_controller: ScheduledController, env: CloudEnv) { await expireStaleRuns(env); },
 } satisfies ExportedHandler<CloudEnv>;

@@ -37,6 +37,8 @@ function rejectSecretValues(env: CloudEnv | undefined, content: string) {
     ? [
         env.GITHUB_TOKEN,
         env.GITHUB_APP_PRIVATE_KEY,
+        env.DASHBOARD_PASSWORD,
+        env.SESSION_SECRET,
         env.ANTHROPIC_API_KEY,
         env.E2B_API_KEY,
         env.EXPO_TOKEN,

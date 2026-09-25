@@ -43,6 +43,9 @@ export type CloudEnv = {
   APP_ORIGIN?: string;
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
+  DASHBOARD_USERNAME?: string;
+  DASHBOARD_PASSWORD?: string;
+  SESSION_SECRET?: string;
   LOCAL_DEV?: string;
 };
 export type CloudContext = { env: CloudEnv; user: string };
