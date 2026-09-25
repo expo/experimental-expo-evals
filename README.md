@@ -150,7 +150,10 @@ bootstrap installs uv/Python, prepares Harbor's paths, and runs `setup.sh` in
 experimental workflow SSH support, pinned to CLI 24.7.0 in the hosted runner.
 On September 25, 2026, the live macOS bootstrap passed, but EAS rejected SSH
 jobs with "no SSH relay is configured." Workflow SSH must be enabled by EAS
-before this provider can run an eval end to end. E2B remains the working default.
+before this provider can run an eval end to end. A subsequent source review also
+found that the relay requires a PTY and forces a login shell; the current
+non-interactive command transport needs adaptation and validation. Treat this
+provider as a prototype. E2B remains the working default.
 
 Configure `EXPO_TOKEN` and `EAS_PROJECT_ID` for the dedicated workflow project.
 Local EAS runs also need Node 24, `npm install -g eas-cli@24.7.0`, and OpenSSH.

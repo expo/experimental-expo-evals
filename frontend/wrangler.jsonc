@@ -16,7 +16,7 @@
     "GITHUB_REPOSITORY": "davidmokos/eas-simulator-evals",
     "GITHUB_BRANCH": "main",
     "ASSIST_MODEL": "claude-opus-5-5",
-    "EAS_PROJECT_ID": "4eddbf65-47d6-4fa4-b91d-eedda3b11893",
+    "EAS_PROJECT_ID": "2e4b45b5-8ed5-48d0-b5fe-2fcdaab8ad9a",
     "APP_ORIGIN": "https://eas-simulator-evals.eas.workers.dev",
     "ACCESS_TEAM_DOMAIN": "",
     "ACCESS_AUD": "",

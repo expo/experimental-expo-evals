@@ -181,7 +181,7 @@ Cloudflare/E2B run; test that separately after the deployment is configured.
 ## EAS Workflows configuration
 
 Set `EAS_PROJECT_ID` in Wrangler vars to a dedicated EAS project accessible by
-`EXPO_TOKEN`. This checkout uses `@expo/eas-simulator-evals`. The EAS provider
+`EXPO_TOKEN`. This checkout uses `@mokosdavid/evals`. The EAS provider
 does not need `E2B_API_KEY`; both providers still need the selected model key and
 `TYPESAFE_API_KEY` for JEV. No API keys go into workflow YAML or workflow inputs.
 Harbor sends task, agent, and verifier environment variables through SSH stdin.
@@ -191,6 +191,9 @@ The container includes pinned EAS CLI and OpenSSH alongside Harbor. It uses
 runs the adapter bootstrap and task setup script, then waits for Harbor to finish.
 The bootstrap waits for at most 55 minutes from startup after setup completes;
 teardown cancels the workflow and confirms its terminal status. Workflow SSH is experimental in EAS CLI 24.7.0.
+The EAS API deployment must configure `SSH_RELAY_SERVER_URL` and
+`SSH_CONNECTION_HOST`; these are not project or Worker settings. The adapter
+transport also needs PTY compatibility work before it is operational.
 
 ## Saving and conflicts
 
