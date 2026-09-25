@@ -301,7 +301,7 @@ class Runner:
             callback.send({"runId": payload["runId"], "status": "running"})
             process_env = {key: value for key, value in os.environ.items() if key not in ("CALLBACK_URL", "CALLBACK_TOKEN", "RUN_ID")}
             with (base / "run.log").open("wb") as log:
-                process = subprocess.Popen([os.environ.get("HARBOR_BIN", "/opt/harbor/.venv/bin/harbor"), "run", "-c", "harbor.yaml"], cwd=base, env=process_env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+                process = subprocess.Popen([os.environ.get("HARBOR_BIN", "/opt/harbor/.venv/bin/harbor"), "run", "--yes", "-c", "harbor.yaml"], cwd=base, env=process_env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
                 try:
                     exit_code = process.wait(timeout=MAX_SECONDS)
                 except subprocess.TimeoutExpired:
