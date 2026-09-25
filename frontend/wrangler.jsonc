@@ -15,7 +15,7 @@
     }
   },
   "vars": {
-    "GITHUB_REPOSITORY": "expo/eas-simulator-evals",
+    "GITHUB_REPOSITORY": "davidmokos/eas-simulator-evals",
     "GITHUB_BRANCH": "main",
     "ASSIST_MODEL": "claude-opus-5-5",
     "APP_ORIGIN": "https://eas-simulator-evals.eas.workers.dev",

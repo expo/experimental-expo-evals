@@ -49,7 +49,7 @@ Configure GitHub App authentication below, or use a fine-grained token restricte
 to that repository with Contents read/write permission as `GITHUB_TOKEN`.
 Branch protection still applies.
 The private repository for this checkout is
-[`expo/eas-simulator-evals`](https://github.com/expo/eas-simulator-evals).
+[`davidmokos/eas-simulator-evals`](https://github.com/davidmokos/eas-simulator-evals).
 
 ## GitHub bot
 
