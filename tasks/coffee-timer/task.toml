@@ -1,7 +1,9 @@
 schema_version = "1.4"
-artifacts = [
-  { source = "/app", destination = "app", exclude = ["**/node_modules/**", "**/.git/**", "**/.env*", "**/.expo/**", "**/.npm/**", "**/*.log"] },
-]
+
+[[artifacts]]
+source = "/app"
+destination = "app"
+exclude = [ "**/node_modules/**", "**/.git/**", "**/.env*", "**/.expo/**", "**/.npm/**", "**/*.log" ]
 
 [agent]
 timeout_sec = 1800
@@ -19,3 +21,6 @@ memory_mb = 4096
 
 [environment.env]
 EXPO_TOKEN = "${EXPO_TOKEN}"
+
+[metadata]
+sandbox_provider = "eas-workflows"
