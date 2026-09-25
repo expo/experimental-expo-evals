@@ -20,6 +20,7 @@ test('production authentication fails closed and does not trust a claimed email 
 test('writes require the browser origin to match the app, including requests without Origin', () => {
   assert.equal(sameOriginMutation(new Request('https://evals.example.com/api', { method: 'POST', headers: { Origin: 'https://evil.example.com' } })), false);
   assert.equal(sameOriginMutation(new Request('https://evals.example.com/api', { method: 'POST' })), false);
+  assert.equal(sameOriginMutation(new Request('https://evals.example.com/api', { method: 'POST', headers: { Origin: 'null' } })), false);
   assert.equal(sameOriginMutation(new Request('https://evals.example.com/api', { method: 'POST', headers: { Origin: 'https://evals.example.com' } })), true);
   assert.equal(sameOriginMutation(new Request('https://evals.example.com/')), true);
 });
@@ -46,6 +47,8 @@ test('password login issues a private secure session and authenticates the dashb
   assert.equal(await authenticate(new Request('https://evals.example.com', { headers: { Cookie: cookie.split(';')[0] } }), dashboardEnv), 'team');
   const page = (await authenticationRoute(new Request('https://evals.example.com/login'), dashboardEnv))!;
   assert.equal(page.status, 200);
+  // A native browser form POST needs its real origin preserved by this policy.
+  assert.equal(page.headers.get('Referrer-Policy'), 'same-origin');
   assert.match(await page.text(), /autocomplete="current-password"/);
 });
 
@@ -53,6 +56,7 @@ test('wrong credentials and cross-origin login cannot create sessions', async ()
   for (const fields of [{ password: 'wrong' }, { username: 'other' }] as Record<string, string>[]) {
     const response = (await authenticationRoute(loginRequest(fields), dashboardEnv))!;
     assert.equal(response.status, 401);
+    assert.equal(response.headers.get('Referrer-Policy'), 'same-origin');
     assert.equal(response.headers.get('Set-Cookie'), null);
     assert.match(await response.text(), /Incorrect username or password/);
   }
