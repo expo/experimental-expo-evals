@@ -3,6 +3,7 @@ import { context } from './cloud-context';
 import * as store from './cloud-store';
 import * as runs from './cloud-runs';
 import { assistDraft as assist } from './cloud-ai';
+import { githubConfigured } from './cloud-github-auth';
 import type { AssistInput, CloudDashboard, CommitInput, SaveDraftInput } from './cloud-types';
 import type { Agent } from './types';
 
@@ -12,7 +13,7 @@ export const dashboard = createServerFn({ method: 'GET' }).handler(async (): Pro
   const e = ctx.env;
   return { user: ctx.user, tasks, runs: history, settings: {
     repository: e.GITHUB_REPOSITORY || '', branch: e.GITHUB_BRANCH || 'main',
-    gitConfigured: !!(e.GITHUB_REPOSITORY && e.GITHUB_TOKEN), aiConfigured: !!e.ANTHROPIC_API_KEY,
+    gitConfigured: githubConfigured(e), aiConfigured: !!e.ANTHROPIC_API_KEY,
     runnerConfigured: !!(e.APP_ORIGIN && e.E2B_API_KEY && e.EXPO_TOKEN && e.TYPESAFE_API_KEY),
     claudeConfigured: !!e.ANTHROPIC_API_KEY, codexConfigured: !!e.OPENAI_API_KEY, local: e.LOCAL_DEV === 'true',
   } };

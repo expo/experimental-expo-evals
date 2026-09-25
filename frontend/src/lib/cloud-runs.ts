@@ -61,6 +61,7 @@ const hash = async (value: string | Uint8Array) =>
 const redact = (env: CloudEnv, text: string) =>
   [
     env.GITHUB_TOKEN,
+    env.GITHUB_APP_PRIVATE_KEY,
     env.ANTHROPIC_API_KEY,
     env.OPENAI_API_KEY,
     env.E2B_API_KEY,

@@ -343,6 +343,7 @@ test("conflict resolutions cannot silently override a newer remote head", async 
 
 test("rejects path traversal, malformed verifier TOML, embedded credentials, and invalid commit messages", async () => {
   const { ctx, sqlite } = database();
+  ctx.env.GITHUB_APP_PRIVATE_KEY = "fixture-private-key";
   try {
     assert.throws(() => validateFiles("../escape", seedTask.files), /task ID/);
     assert.throws(
@@ -368,6 +369,10 @@ test("rejects path traversal, malformed verifier TOML, embedded credentials, and
           change(seedTask.files, "instruction.md", "fixture-github-secret"),
           ctx.env,
         ),
+      /secret/,
+    );
+    assert.throws(
+      () => validateFiles(seedTask.id, change(seedTask.files, "instruction.md", "fixture-private-key"), ctx.env),
       /secret/,
     );
     const [task] = await listTasks(ctx);
@@ -434,6 +439,7 @@ test("assistant sends only task context and returns a reviewable proposal withou
   const { ctx, sqlite } = database();
   const originalFetch = globalThis.fetch;
   ctx.env.ANTHROPIC_API_KEY = "fixture-anthropic-secret";
+  ctx.env.GITHUB_APP_PRIVATE_KEY = "fixture-private-key";
   try {
     const [task] = await listTasks(ctx);
     const input: AssistInput = {
@@ -459,6 +465,7 @@ test("assistant sends only task context and returns a reviewable proposal withou
       assert.match(request.system, /propose_task_files exactly once/);
       assert.ok(!String(options?.body).includes("fixture-anthropic-secret"));
       assert.ok(!String(options?.body).includes("fixture-github-secret"));
+      assert.ok(!String(options?.body).includes("fixture-private-key"));
       return Response.json({
         content: [
           { type: "tool_use", name: "propose_task_files", input: proposal },
@@ -466,6 +473,7 @@ test("assistant sends only task context and returns a reviewable proposal withou
       });
     };
     assert.deepEqual(await assistDraft(ctx, input), proposal);
+    await assert.rejects(assistDraft(ctx, { ...input, instruction: "Use fixture-private-key" }), /Remove secret values/);
     assert.deepEqual(
       await assistDraft(ctx, {
         ...input,

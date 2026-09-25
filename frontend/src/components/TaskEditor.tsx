@@ -659,7 +659,7 @@ export function TaskEditor({
         </div>
         <p className="config-explanation">
           {!data.settings.gitConfigured
-            ? "Connect a GitHub repository and token to enable commits. Saved drafts still persist in D1."
+            ? "Connect the GitHub bot to enable commits. Saved drafts still persist in D1."
             : dirty
               ? "Save your draft before committing."
               : !uncommitted

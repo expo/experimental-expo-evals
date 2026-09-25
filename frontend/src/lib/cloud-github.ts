@@ -1,5 +1,6 @@
 import type { CloudEnv } from "./cloud-types";
 import type { ConfigFile } from "./types";
+import { githubConfigured, githubToken } from "./cloud-github-auth.ts";
 
 export const taskPaths = [
   "instruction.md",
@@ -64,10 +65,10 @@ function githubSettings(env: CloudEnv) {
   if (
     !repository ||
     !/^[\w.-]+\/[\w.-]+$/.test(repository) ||
-    !env.GITHUB_TOKEN
+    !githubConfigured(env)
   ) {
     throw new Error(
-      "Configure GITHUB_REPOSITORY, GITHUB_BRANCH, and GITHUB_TOKEN before committing.",
+      "Configure GITHUB_REPOSITORY, GITHUB_BRANCH, and GitHub App credentials (or GITHUB_TOKEN) before committing.",
     );
   }
   return { repository, branch };
@@ -92,7 +93,7 @@ async function graphql<T>(
   const response = await fetch("https://api.github.com/graphql", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+      Authorization: `Bearer ${await githubToken(env)}`,
       "Content-Type": "application/json",
       "User-Agent": "eas-simulator-evals",
     },

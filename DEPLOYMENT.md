@@ -45,10 +45,45 @@ Commit the project there through your normal workflow first. Configure
 `GITHUB_REPOSITORY=owner/repository` and `GITHUB_BRANCH` in Wrangler vars. The
 Commit button updates task files only, using GitHub's atomic
 `createCommitOnBranch` operation. It cannot create an empty Git repository.
-Use a fine-grained token restricted to that repository with Contents read/write
-permission as `GITHUB_TOKEN`. Branch protection still applies.
+Configure GitHub App authentication below, or use a fine-grained token restricted
+to that repository with Contents read/write permission as `GITHUB_TOKEN`.
+Branch protection still applies.
 The private repository for this checkout is
 [`expo/eas-simulator-evals`](https://github.com/expo/eas-simulator-evals).
+
+## GitHub bot
+
+Register a private GitHub App under the account that owns the repository. Give
+it repository **Contents: read and write**; Metadata read is included by GitHub.
+Disable webhooks and leave user authorization callbacks empty. Install it on
+only the eval repository. GitHub provides the app's bot identity automatically.
+
+Set `GITHUB_APP_ID` to its App ID or client ID and
+`GITHUB_APP_INSTALLATION_ID` to the numeric ID in the installation settings URL.
+Generate a private key in the app settings and put its complete PEM value in
+`GITHUB_APP_PRIVATE_KEY`. Both downloaded PKCS#1 keys and PKCS#8 keys work.
+For local development, keep these in the ignored root `.env` and run
+`npm run dev:secrets` from `frontend/`. A PEM can be a double-quoted multiline
+dotenv value. Never commit the downloaded key.
+
+Set the same three values as Worker secrets. For the private key, piping the
+downloaded file avoids putting it into shell history:
+
+```sh
+npx wrangler secret put GITHUB_APP_ID
+npx wrangler secret put GITHUB_APP_INSTALLATION_ID
+npx wrangler secret put GITHUB_APP_PRIVATE_KEY < /path/to/downloaded.private-key.pem
+```
+
+The Worker exchanges an app JWT for a short-lived installation token restricted
+to the configured repository and Contents write. It refreshes the token before
+expiry. Complete app credentials take precedence over the optional `GITHUB_TOKEN`
+fallback. Commits are authored as the app bot; the editor records the employee
+who saved each revision in D1. No GitHub credential is sent to the browser or
+Harbor runner.
+
+See [GitHub App registration](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app)
+and [installation authentication](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation).
 
 ## Company authentication
 
@@ -86,7 +121,8 @@ Cloudflare dashboard.
 Set secrets interactively without putting their values in source files:
 
 ```sh
-npx wrangler secret put GITHUB_TOKEN
+# Only when using a personal token instead of the GitHub App above:
+# npx wrangler secret put GITHUB_TOKEN
 npx wrangler secret put ANTHROPIC_API_KEY
 npx wrangler secret put E2B_API_KEY
 npx wrangler secret put EXPO_TOKEN

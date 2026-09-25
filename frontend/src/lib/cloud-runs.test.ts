@@ -232,6 +232,7 @@ test("unknown capability and changed terminal callbacks cannot modify completed 
 
 test("artifact uploads reject traversal, redact credentials, and stay immutable across retries", async () => {
   const f = await fixture();
+  f.ctx.env.GITHUB_APP_PRIVATE_KEY = "test-app-private-key";
   f.committed();
   const { id } = await f.start();
   for (const path of [
@@ -250,7 +251,7 @@ test("artifact uploads reject traversal, redact credentials, and stay immutable 
       await f.upload(
         id,
         "jobs/trial/result.json",
-        JSON.stringify({ value: "test-expo-secret" }),
+        JSON.stringify({ value: "test-expo-secret", key: "test-app-private-key" }),
       )
     ).status,
     200,
@@ -260,7 +261,7 @@ test("artifact uploads reject traversal, redact credentials, and stay immutable 
       await f.upload(
         id,
         "jobs/trial/result.json",
-        JSON.stringify({ value: "test-expo-secret" }),
+        JSON.stringify({ value: "test-expo-secret", key: "test-app-private-key" }),
       )
     ).status,
     200,
@@ -272,7 +273,7 @@ test("artifact uploads reject traversal, redact credentials, and stay immutable 
   const response = await artifactResponse(f.ctx, id, "jobs/trial/result.json");
   assert.match(response.headers.get("content-disposition")!, /^attachment/);
   assert.equal(response.headers.get("x-content-type-options"), "nosniff");
-  assert.deepEqual(JSON.parse(await response.text()), { value: "[redacted]" });
+  assert.deepEqual(JSON.parse(await response.text()), { value: "[redacted]", key: "[redacted]" });
   f.sql.close();
 });
 

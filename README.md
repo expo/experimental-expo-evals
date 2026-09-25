@@ -33,6 +33,7 @@ shows the complete native task files, preserving exact text and formatting.
 - **Save draft** writes an atomic D1 revision shared with other users. It does
   not create a Git commit or write into this machine's `tasks/` directory.
 - **Commit changes** writes the native files to the configured GitHub branch.
+  A GitHub App supplies the bot identity with access to this repository only.
   Independent file changes merge. Conflicting files show draft and Git versions
   and require an explicit choice or edited resolution. No force push is used.
 - **Run eval** requires the saved revision to be committed. The runner receives

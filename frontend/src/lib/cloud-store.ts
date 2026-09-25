@@ -36,6 +36,7 @@ function rejectSecretValues(env: CloudEnv | undefined, content: string) {
   const secrets = env
     ? [
         env.GITHUB_TOKEN,
+        env.GITHUB_APP_PRIVATE_KEY,
         env.ANTHROPIC_API_KEY,
         env.E2B_API_KEY,
         env.EXPO_TOKEN,
