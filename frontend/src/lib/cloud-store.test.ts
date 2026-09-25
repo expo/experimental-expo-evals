@@ -13,6 +13,7 @@ import { mergeFiles, taskPaths } from "./cloud-github.ts";
 import { assistDraft, validateProposal } from "./cloud-ai.ts";
 import { seedTask } from "./seed-task.ts";
 import { createTaskFiles } from "./new-task.ts";
+import { sandboxProvider, selectSandboxProvider } from "./task-provider.ts";
 import type { AssistInput, CloudContext } from "./cloud-types";
 import type { ConfigFile } from "./types";
 
@@ -149,6 +150,79 @@ function githubFixture(initial = seedTask.files) {
   return { fixture, fetcher };
 }
 
+test("workflow configuration is saved, committed, and conflict-checked as native task files", async () => {
+  const { ctx, sqlite } = database();
+  const originalFetch = globalThis.fetch;
+  const { fixture, fetcher } = githubFixture();
+  globalThis.fetch = fetcher;
+  try {
+    const [task] = await listTasks(ctx);
+    const baseline = await commitTask(ctx, {
+      taskId: task.id,
+      revision: task.revision,
+      message: "records task",
+    });
+    assert.ok(baseline.ok);
+    const workflow = readFileSync(
+      new URL("../../../eas_provider/workflow.yml", import.meta.url),
+      "utf8",
+    );
+    const draft = await saveDraft(ctx, {
+      taskId: task.id,
+      name: task.name,
+      revision: baseline.task.revision,
+      files: selectSandboxProvider(
+        baseline.task.files,
+        "eas-workflows",
+        workflow,
+      ),
+    });
+    const committed = await commitTask(ctx, {
+      taskId: task.id,
+      revision: draft.revision,
+      message: "uses eas workflows",
+    });
+    assert.ok(committed.ok);
+    assert.equal(sandboxProvider(committed.task.files), "eas-workflows");
+    assert.equal(committed.task.committedRevision, committed.task.revision);
+    assert.equal(
+      fixture.files.find((file) => file.path.endsWith("/workflow.yml"))
+        ?.content,
+      workflow,
+    );
+    const ours = await saveDraft(ctx, {
+      taskId: task.id,
+      name: task.name,
+      revision: committed.task.revision,
+      files: change(
+        committed.task.files,
+        "environment/workflow.yml",
+        workflow + "# draft edit\n",
+      ),
+    });
+    fixture.files = change(
+      fixture.files,
+      "environment/workflow.yml",
+      workflow + "# repository edit\n",
+    );
+    const conflict = await commitTask(ctx, {
+      taskId: task.id,
+      revision: ours.revision,
+      message: "updates workflow",
+    });
+    assert.equal(conflict.ok, false);
+    if (conflict.ok) throw new Error("Expected workflow conflict");
+    assert.equal(
+      conflict.conflicts[0].path,
+      `tasks/${task.id}/environment/workflow.yml`,
+    );
+    assert.equal(fixture.mutations.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    sqlite.close();
+  }
+});
+
 test("new tasks start empty and save native files without inheriting the example", async () => {
   const { ctx, sqlite } = database();
   try {
@@ -157,20 +231,28 @@ test("new tasks start empty and save native files without inheriting the example
       files.find((file) => file.path.endsWith("/instruction.md"))?.content,
       "",
     );
-    assert.doesNotMatch(JSON.stringify(files), /coffee|expo|eas-cli|EXPO_TOKEN/i);
+    assert.doesNotMatch(
+      JSON.stringify(files),
+      /coffee|expo|eas-cli|EXPO_TOKEN/i,
+    );
     assert.throws(
       () => validateFiles("new-eval", files),
       /prompt cannot be empty/,
     );
     assert.equal(
-      validateFiles("new-eval", files, ctx.env, { allowEmptyPrompt: true }).length,
-      taskPaths.length,
+      validateFiles("new-eval", files, ctx.env, { allowEmptyPrompt: true })
+        .length,
+      6,
     );
     const task = await saveDraft(ctx, {
       taskId: "new-eval",
       name: "New eval",
       revision: null,
-      files: change(files, "instruction.md", "Write hello to /app/hello.txt.\n"),
+      files: change(
+        files,
+        "instruction.md",
+        "Write hello to /app/hello.txt.\n",
+      ),
     });
     assert.equal(task.id, "new-eval");
     assert.deepEqual((await getTask(ctx, "new-eval")).files, task.files);
@@ -404,7 +486,12 @@ test("rejects path traversal, malformed verifier TOML, embedded credentials, and
       /secret/,
     );
     assert.throws(
-      () => validateFiles(seedTask.id, change(seedTask.files, "instruction.md", "fixture-private-key"), ctx.env),
+      () =>
+        validateFiles(
+          seedTask.id,
+          change(seedTask.files, "instruction.md", "fixture-private-key"),
+          ctx.env,
+        ),
       /secret/,
     );
     const [task] = await listTasks(ctx);
@@ -505,7 +592,10 @@ test("assistant sends only task context and returns a reviewable proposal withou
       });
     };
     assert.deepEqual(await assistDraft(ctx, input), proposal);
-    await assert.rejects(assistDraft(ctx, { ...input, instruction: "Use fixture-private-key" }), /Remove secret values/);
+    await assert.rejects(
+      assistDraft(ctx, { ...input, instruction: "Use fixture-private-key" }),
+      /Remove secret values/,
+    );
     assert.deepEqual(
       await assistDraft(ctx, {
         ...input,

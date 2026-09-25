@@ -17,7 +17,7 @@ def payload():
     return {
         "runId": "run-123", "taskId": "coffee-timer", "commitSha": "a" * 40,
         "agent": "claude-code", "model": "anthropic/claude-opus-5-5",
-        "files": [{"path": f"tasks/coffee-timer/{name}", "content": "example\n"} for name in sorted(service.TASK_FILES)],
+        "files": [{"path": f"tasks/coffee-timer/{name}", "content": 'schema_version = "1.4"\n' if name == "task.toml" else "example\n"} for name in sorted(service.TASK_FILES)],
     }
 
 
@@ -80,6 +80,19 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(config["n_concurrent_trials"], 1)
         self.assertEqual(config["environment"]["import_path"], "e2b_environment:OneHourE2B")
         self.assertEqual(config["tasks"], [{"path": "tasks/coffee-timer"}])
+
+    def test_selects_provider_from_immutable_task_snapshot(self):
+        value = payload()
+        config_file = next(file for file in value["files"] if file["path"].endswith("/task.toml"))
+        config_file["content"] += '\n[metadata]\nsandbox_provider = "eas-workflows"\n'
+        with self.assertRaisesRegex(ValueError, "workflow.yml"):
+            service.validate_payload(value)
+        value["files"].append({"path": "tasks/coffee-timer/environment/workflow.yml", "content": "jobs: {}\n"})
+        service.validate_payload(value)
+        self.assertEqual(service.make_config(value)["environment"]["import_path"], "eas_environment:EASWorkflowEnvironment")
+        config_file["content"] = '[metadata]\nsandbox_provider = "arbitrary-provider"\n'
+        with self.assertRaisesRegex(ValueError, "Unsupported sandbox"):
+            service.validate_payload(value)
 
     def test_failed_cli_cannot_be_reported_as_pass_and_secrets_are_redacted(self):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"ANTHROPIC_API_KEY": "secret-value-123"}):

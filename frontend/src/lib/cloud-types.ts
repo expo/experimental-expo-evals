@@ -47,6 +47,8 @@ export type CloudDashboard = {
     gitConfigured: boolean;
     aiConfigured: boolean;
     runnerConfigured: boolean;
+    e2bConfigured: boolean;
+    easConfigured: boolean;
     claudeConfigured: boolean;
     codexConfigured: boolean;
     local: boolean;
@@ -65,6 +67,7 @@ export type CloudEnv = {
   ANTHROPIC_API_KEY?: string;
   ASSIST_MODEL?: string;
   E2B_API_KEY?: string;
+  EAS_PROJECT_ID?: string;
   EXPO_TOKEN?: string;
   TYPESAFE_API_KEY?: string;
   OPENAI_API_KEY?: string;

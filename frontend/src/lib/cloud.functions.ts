@@ -29,12 +29,9 @@ export const dashboard = createServerFn({ method: "GET" }).handler(
         aiConfigured: !!e.ANTHROPIC_API_KEY,
         runnerConfigured:
           e.LOCAL_DEV !== "true" &&
-          !!(
-            e.APP_ORIGIN &&
-            e.E2B_API_KEY &&
-            e.EXPO_TOKEN &&
-            e.TYPESAFE_API_KEY
-          ),
+          !!(e.APP_ORIGIN && e.EXPO_TOKEN && e.TYPESAFE_API_KEY),
+        e2bConfigured: !!e.E2B_API_KEY,
+        easConfigured: !!(e.EAS_PROJECT_ID && e.EXPO_TOKEN),
         claudeConfigured: !!e.ANTHROPIC_API_KEY,
         codexConfigured: !!e.OPENAI_API_KEY,
         local: e.LOCAL_DEV === "true",

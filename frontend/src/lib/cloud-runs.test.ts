@@ -14,6 +14,7 @@ import {
 import { listTasks } from "./cloud-store.ts";
 import type { CloudContext, RunnerPayload } from "./cloud-types";
 import type { RunDetail } from "./types";
+import { sandboxProvider, selectSandboxProvider } from "./task-provider.ts";
 
 async function fixture() {
   const sql = new DatabaseSync(":memory:");
@@ -198,10 +199,60 @@ test("runs require committed revision, preserve immutable files, and allow only 
   assert.notEqual(snapshot.callback_hash, f.token);
   f.sql.prepare("UPDATE tasks SET files_json='[]',revision=revision+1").run();
   assert.notEqual(snapshot.files_json, "[]");
-  assert.equal((await getRun(f.ctx, id)).configFiles.length, 6);
-  f.sql.prepare("UPDATE tasks SET revision=1,committed_revision=1").run();
+  assert.equal(
+    (await getRun(f.ctx, id)).configFiles.length,
+    JSON.parse(String(snapshot.files_json)).length,
+  );
+  f.sql
+    .prepare("UPDATE tasks SET revision=1,committed_revision=1,files_json=?")
+    .run(snapshot.files_json);
   await assert.rejects(f.start(), /Another eval/);
   f.sql.close();
+});
+
+test("EAS runs require their project configuration and preserve it without needing an E2B key", async () => {
+  const f = await fixture();
+  try {
+    const [task] = await listTasks(f.ctx);
+    const workflow = readFileSync(
+      new URL("../../../eas_provider/workflow.yml", import.meta.url),
+      "utf8",
+    );
+    const files = selectSandboxProvider(task.files, "eas-workflows", workflow);
+    f.sql.prepare("UPDATE tasks SET files_json=?").run(JSON.stringify(files));
+    f.committed();
+    delete f.ctx.env.E2B_API_KEY;
+    await assert.rejects(f.start(), /EAS_PROJECT_ID/);
+    assert.equal(
+      f.sql.prepare("SELECT count(*) AS count FROM runs").get()!.count,
+      0,
+    );
+    f.ctx.env.EAS_PROJECT_ID = "11111111-1111-4111-8111-111111111111";
+    const { id } = await f.start();
+    assert.equal(sandboxProvider(f.payload!.files), "eas-workflows");
+    f.sql
+      .prepare("UPDATE tasks SET files_json=?")
+      .run(JSON.stringify(task.files));
+    assert.deepEqual((await getRun(f.ctx, id)).configFiles, files);
+  } finally {
+    f.sql.close();
+  }
+});
+
+test("E2B remains the default and requires its own key even with an EAS project", async () => {
+  const f = await fixture();
+  try {
+    f.committed();
+    delete f.ctx.env.E2B_API_KEY;
+    f.ctx.env.EAS_PROJECT_ID = "11111111-1111-4111-8111-111111111111";
+    await assert.rejects(f.start(), /E2B_API_KEY/);
+    assert.equal(
+      f.sql.prepare("SELECT count(*) AS count FROM runs").get()!.count,
+      0,
+    );
+  } finally {
+    f.sql.close();
+  }
 });
 
 test("unknown capability and changed terminal callbacks cannot modify completed runs", async () => {

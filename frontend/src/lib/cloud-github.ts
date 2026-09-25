@@ -9,6 +9,7 @@ export const taskPaths = [
   "tests/test.sh",
   "task.toml",
   "environment/Dockerfile",
+  "environment/workflow.yml",
 ] as const;
 export type FileConflict = {
   path: string;

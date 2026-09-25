@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "node scripts/sync-workflow.mjs",
     "dev": "vite dev --host 127.0.0.1 --port 3000 --strictPort",
+    "prebuild": "node scripts/sync-workflow.mjs",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1 --port 3000 --strictPort",
     "check": "tsc --noEmit",

@@ -9,6 +9,7 @@ import type {
 } from "./cloud-types";
 import type { ConfigFile } from "./types";
 import { seedTask } from "./seed-task.ts";
+import { sandboxProvider } from "./task-provider.ts";
 import {
   createTaskCommit,
   isStaleHead,
@@ -60,8 +61,14 @@ export function validateFiles(
   options: { allowEmptyPrompt?: boolean } = {},
 ): ConfigFile[] {
   validateTaskId(id);
-  if (!Array.isArray(value) || value.length !== taskPaths.length)
-    throw new Error("Provide all six native task files.");
+  if (
+    !Array.isArray(value) ||
+    value.length < taskPaths.length - 1 ||
+    value.length > taskPaths.length
+  )
+    throw new Error(
+      "Provide the six native task files, with an optional environment/workflow.yml.",
+    );
   const allowed = new Set(taskPaths.map((path) => `tasks/${id}/${path}`));
   let total = 0;
   const files: ConfigFile[] = value.map((file) => {
@@ -81,7 +88,15 @@ export function validateFiles(
     return { path: file.path, content: file.content };
   });
   const text = (suffix: string) =>
-    files.find((f) => f.path === `tasks/${id}/${suffix}`)!.content;
+    files.find((f) => f.path === `tasks/${id}/${suffix}`)?.content ?? "";
+  if (
+    taskPaths.some(
+      (path) =>
+        path !== "environment/workflow.yml" &&
+        allowed.has(`tasks/${id}/${path}`),
+    )
+  )
+    throw new Error("Provide all six native task files.");
   if (!text("instruction.md").trim() && !options.allowEmptyPrompt)
     throw new Error("The task prompt cannot be empty.");
   const rubric = parse(text("tests/rubric.toml")) as Record<string, any>;
@@ -134,12 +149,17 @@ export function validateFiles(
   const task = parse(text("task.toml")) as Record<string, any>;
   if (!task.schema_version)
     throw new Error("task.toml must declare its Harbor schema_version.");
-  if (
-    !text("tests/test.sh").trim() ||
-    !text("environment/setup.sh").trim() ||
-    !text("environment/Dockerfile").trim()
-  )
-    throw new Error("Setup, Dockerfile, and verifier scripts cannot be empty.");
+  if (!text("tests/test.sh").trim() || !text("environment/setup.sh").trim())
+    throw new Error("Setup and verifier scripts cannot be empty.");
+  const provider = sandboxProvider(files);
+  const definition =
+    provider === "eas-workflows"
+      ? "environment/workflow.yml"
+      : "environment/Dockerfile";
+  if (!text(definition).trim())
+    throw new Error(
+      `${definition} is required for ${provider === "eas-workflows" ? "EAS Workflows" : "E2B"}.`,
+    );
   return files;
 }
 

@@ -4,6 +4,7 @@ import {
   type StopParams,
 } from "@cloudflare/containers";
 import type { RunnerPayload } from "./cloud-types";
+import { sandboxProvider } from "./task-provider";
 export type { RunnerPayload } from "./cloud-types";
 
 type RunnerEnv = {
@@ -12,11 +13,12 @@ type RunnerEnv = {
   ANTHROPIC_API_KEY?: string;
   OPENAI_API_KEY?: string;
   E2B_API_KEY?: string;
+  EAS_PROJECT_ID?: string;
   EXPO_TOKEN?: string;
   TYPESAFE_API_KEY?: string;
 };
 
-/** A separate Container per run. It hosts Harbor; E2B hosts the agent and verifier. */
+/** A separate Container per run hosts Harbor and connects to the selected sandbox. */
 export class HarborRunner extends Container<RunnerEnv> {
   defaultPort = 8080;
   sleepAfter = "70m";
@@ -153,7 +155,9 @@ export class HarborRunner extends Container<RunnerEnv> {
     if (!callbackToken || callbackToken.length < 32)
       throw new Error("A per-run callback token is required.");
     const required = [
-      "E2B_API_KEY",
+      sandboxProvider(payload.files) === "e2b"
+        ? "E2B_API_KEY"
+        : "EAS_PROJECT_ID",
       "EXPO_TOKEN",
       "TYPESAFE_API_KEY",
       payload.agent === "codex" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY",
@@ -183,6 +187,7 @@ export class HarborRunner extends Container<RunnerEnv> {
       "ANTHROPIC_API_KEY",
       "OPENAI_API_KEY",
       "E2B_API_KEY",
+      "EAS_PROJECT_ID",
       "EXPO_TOKEN",
       "TYPESAFE_API_KEY",
     ] as const) {

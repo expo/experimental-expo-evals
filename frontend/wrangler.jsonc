@@ -3,55 +3,52 @@
   "name": "eas-simulator-evals",
   "main": "src/worker.ts",
   "compatibility_date": "2026-09-23",
-  "compatibility_flags": [
-    "nodejs_compat"
-  ],
+  "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": false,
   "observability": {
     "enabled": true,
     "logs": {
-      "invocation_logs": false
-    }
+      "invocation_logs": false,
+    },
   },
   "vars": {
     "GITHUB_REPOSITORY": "davidmokos/eas-simulator-evals",
     "GITHUB_BRANCH": "main",
     "ASSIST_MODEL": "claude-opus-5-5",
+    "EAS_PROJECT_ID": "4eddbf65-47d6-4fa4-b91d-eedda3b11893",
     "APP_ORIGIN": "https://eas-simulator-evals.eas.workers.dev",
     "ACCESS_TEAM_DOMAIN": "",
     "ACCESS_AUD": "",
-    "LOCAL_DEV": "false"
+    "LOCAL_DEV": "false",
   },
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "eas-simulator-evals",
       "database_id": "2e1ab456-5239-4963-913d-22b77e1379fe",
-      "migrations_dir": "migrations"
-    }
+      "migrations_dir": "migrations",
+    },
   ],
   "r2_buckets": [
     {
       "binding": "ARTIFACTS",
-      "bucket_name": "eas-simulator-eval-artifacts"
-    }
+      "bucket_name": "eas-simulator-eval-artifacts",
+    },
   ],
   "durable_objects": {
     "bindings": [
       {
         "name": "RUNNERS",
-        "class_name": "HarborRunner"
-      }
-    ]
+        "class_name": "HarborRunner",
+      },
+    ],
   },
   "migrations": [
     {
       "tag": "v1",
-      "new_sqlite_classes": [
-        "HarborRunner"
-      ]
-    }
+      "new_sqlite_classes": ["HarborRunner"],
+    },
   ],
   "containers": [
     {
@@ -59,16 +56,14 @@
       "image": "../runner/Dockerfile",
       "image_build_context": "..",
       "max_instances": 2,
-      "instance_type": "basic"
-    }
+      "instance_type": "basic",
+    },
   ],
   "triggers": {
-    "crons": [
-      "*/5 * * * *"
-    ]
+    "crons": ["*/5 * * * *"],
   },
   "dev": {
-    "enable_containers": false
+    "enable_containers": false,
   },
-  "account_id": "e6f39f67f543faa6038768e8f37e4234"
+  "account_id": "e6f39f67f543faa6038768e8f37e4234",
 }

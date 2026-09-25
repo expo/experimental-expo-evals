@@ -3,12 +3,13 @@
 The web app runs on Workers. D1 stores shared drafts, revisions, and run records.
 GitHub stores committed Harbor task files. R2 holds results and artifacts. Each
 run starts a Cloudflare Container with Python and the pinned Harbor dependencies;
-Harbor creates the agent/verifier sandbox in E2B. Cloudflare Containers require
+Harbor creates the agent/verifier sandbox in E2B or EAS Workflows. Cloudflare Containers require
 an account/plan with Containers enabled. Ordinary Workers cannot spawn Harbor.
 
 This deployment uses a Container for the Harbor coordinator only. The task's
-`environment/Dockerfile` still describes the E2B environment. Neither runs a
-local Expo simulator: the evaluated agent uses EAS Simulator.
+`environment/Dockerfile` describes E2B; `environment/workflow.yml` describes
+the EAS macOS machine. The coffee-timer agent uses the separate EAS Simulator
+service with either provider.
 
 ## Local setup
 
@@ -21,7 +22,7 @@ reachable from Docker, such as an authenticated development tunnel or
 `http://host.docker.internal:3000` with suitable host binding.
 
 The app seeds the coffee-timer task on first use. Shared drafts are stored as
-the exact six native file contents; the UI doesn't translate them to another
+the native file contents, including an optional EAS workflow; the UI doesn't translate them to another
 eval format. Draft saves do not alter local repository files. The CLI continues
 to read local files, so pull Git changes before running a shared task locally.
 
@@ -168,7 +169,7 @@ npm run deploy
 
 `npm run deploy` builds the TanStack app, then runs `wrangler deploy`. Wrangler
 builds/uploads the Container image using the repository root as its context.
-The root `.dockerignore` permits only pinned dependencies, the E2B adapter, and
+The root `.dockerignore` permits only pinned dependencies, environment adapters, and
 runner source; it excludes `.env`, `.dev.vars`, local jobs, and Git metadata.
 No credentials are baked into the image.
 
@@ -176,6 +177,20 @@ After deployment, verify sign-in, save/reload a draft, commit to the
 chosen branch, and launch one eval. Its result should remain visible after the
 runner stops. Browser/Node tests and a local image build do not prove a live
 Cloudflare/E2B run; test that separately after the deployment is configured.
+
+## EAS Workflows configuration
+
+Set `EAS_PROJECT_ID` in Wrangler vars to a dedicated EAS project accessible by
+`EXPO_TOKEN`. This checkout uses `@expo/eas-simulator-evals`. The EAS provider
+does not need `E2B_API_KEY`; both providers still need the selected model key and
+`TYPESAFE_API_KEY` for JEV. No API keys go into workflow YAML or workflow inputs.
+Harbor sends task, agent, and verifier environment variables through SSH stdin.
+
+The container includes pinned EAS CLI and OpenSSH alongside Harbor. It uses
+`workflow:run --ssh` and `workflow:ssh` to control a macOS machine. The workflow
+runs the adapter bootstrap and task setup script, then waits for Harbor to finish.
+The bootstrap waits for at most 55 minutes from startup after setup completes;
+teardown cancels the workflow and confirms its terminal status. Workflow SSH is experimental in EAS CLI 24.7.0.
 
 ## Saving and conflicts
 
@@ -208,7 +223,8 @@ Failures confirmed before dispatch are recorded immediately and release the slot
 Completed results trigger a container destroy after they are stored durably.
 
 The runner launches native `harbor run` with one attempt, one concurrent trial,
-and E2B. It uploads results to R2 and updates D1 before completion. Container
+and the provider selected by the committed task's `metadata.sandbox_provider`.
+It uploads results to R2 and updates D1 before completion. Container
 disk is disposable, so completed results never rely on it. Files have per-file
 and total upload limits; credentials and hidden files are excluded. The runner
 has a one-hour timeout. A five-minute scheduled check marks runs without a final

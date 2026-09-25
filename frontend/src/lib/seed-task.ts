@@ -26,6 +26,10 @@ export const seedTask = {
     {
       "path": "tasks/coffee-timer/tests/test.sh",
       "content": "#!/usr/bin/env bash\nset -eu\nexec uv run --no-project --python 3.12 \\\n  --with 'harbor-rewardkit[jev] @ git+https://github.com/harbor-framework/harbor.git@404bae708cf284f4c6ed054422ad4f5b2aca764f#subdirectory=packages/rewardkit' \\\n  python - <<'PY'\nfrom pathlib import Path\nfrom rewardkit import format_trajectory, run\n\n# JEV accepts text files, not RewardKit's atif-trajectory option.\nPath(\"/logs/verifier/trajectory.txt\").write_text(\n    format_trajectory(\"/logs/agent/trajectory.json\", max_tokens=16000)\n)\nrun(\"/tests\")\nPY\n"
+    },
+    {
+      "path": "tasks/coffee-timer/environment/workflow.yml",
+      "content": "name: Harbor sandbox\ndefaults:\n  tools:\n    node: \"24\"\njobs:\n  sandbox:\n    runs_on: macos-medium\n    image: macos-tahoe-26.4-xcode-26.4\n    steps:\n      - uses: eas/checkout\n      - name: Prepare Harbor sandbox\n        run: bash bootstrap.sh\n"
     }
   ]
 };

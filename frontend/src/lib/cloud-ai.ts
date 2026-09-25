@@ -4,7 +4,11 @@ import { validateTaskId } from "./cloud-github.ts";
 
 const fieldPaths = {
   prompt: ["instruction.md"],
-  setup: ["environment/setup.sh"],
+  setup: [
+    "environment/setup.sh",
+    "environment/Dockerfile",
+    "environment/workflow.yml",
+  ],
   verifier: ["tests/rubric.toml", "tests/test.sh"],
 };
 
@@ -45,10 +49,15 @@ export function validateProposal(
   const replacements = new Map(proposal.files.map((f) => [f.path, f.content]));
   validateFiles(
     input.taskId,
-    input.files.map((f) => ({
-      path: f.path,
-      content: replacements.get(f.path) ?? f.content,
-    })),
+    [
+      ...input.files.map((f) => ({
+        path: f.path,
+        content: replacements.get(f.path) ?? f.content,
+      })),
+      ...proposal.files.filter(
+        (file) => !input.files.some((current) => current.path === file.path),
+      ),
+    ],
     ctx.env,
   );
   return {

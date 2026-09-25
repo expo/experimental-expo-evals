@@ -1,4 +1,4 @@
-"""One pinned Harbor CLI invocation per container; task execution stays in E2B."""
+"""One pinned Harbor CLI invocation per container; providers own the sandbox."""
 from __future__ import annotations
 
 import hashlib
@@ -12,6 +12,7 @@ import signal
 import subprocess
 import threading
 import time
+import tomllib
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
@@ -25,6 +26,11 @@ MAX_SECONDS = 3600
 TASK_FILES = {
     "instruction.md", "task.toml", "environment/Dockerfile",
     "environment/setup.sh", "tests/test.sh", "tests/rubric.toml",
+}
+OPTIONAL_TASK_FILES = {"environment/workflow.yml"}
+ENVIRONMENTS = {
+    "e2b": "e2b_environment:OneHourE2B",
+    "eas-workflows": "eas_environment:EASWorkflowEnvironment",
 }
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif"}
 SECRET_NAMES = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "E2B_API_KEY", "EXPO_TOKEN", "TYPESAFE_API_KEY", "CALLBACK_TOKEN", "CALLBACK_URL")
@@ -61,9 +67,10 @@ def validate_payload(payload):
     if not isinstance(payload.get("model"), str) or not payload["model"].strip() or len(payload["model"]) > 200:
         raise ValueError("Invalid model.")
     files = payload.get("files")
-    if not isinstance(files, list) or len(files) != len(TASK_FILES):
-        raise ValueError("The six native task files are required.")
-    allowed = {f"tasks/{payload['taskId']}/{name}" for name in TASK_FILES}
+    if not isinstance(files, list) or not len(TASK_FILES) <= len(files) <= len(TASK_FILES | OPTIONAL_TASK_FILES):
+        raise ValueError("Native task files are required, with an optional EAS workflow.")
+    required = {f"tasks/{payload['taskId']}/{name}" for name in TASK_FILES}
+    allowed = required | {f"tasks/{payload['taskId']}/{name}" for name in OPTIONAL_TASK_FILES}
     seen = set()
     for file in files:
         if not isinstance(file, dict) or file.get("path") not in allowed or file["path"] in seen:
@@ -71,13 +78,30 @@ def validate_payload(payload):
         if not isinstance(file.get("content"), str) or len(file["content"].encode()) > 200_000:
             raise ValueError("Invalid task file contents.")
         seen.add(file["path"])
+    if not required <= seen:
+        raise ValueError("Missing native task files.")
+    if sandbox_provider(payload) == "eas-workflows":
+        workflow = next((file["content"] for file in files if file["path"].endswith("/environment/workflow.yml")), "")
+        if not workflow.strip():
+            raise ValueError("EAS Workflows requires environment/workflow.yml.")
     return payload
+
+
+def sandbox_provider(payload):
+    config = next(file["content"] for file in payload["files"] if file["path"].endswith("/task.toml"))
+    metadata = tomllib.loads(config).get("metadata", {})
+    if not isinstance(metadata, dict):
+        raise ValueError("task.toml metadata must be a table.")
+    provider = metadata.get("sandbox_provider", "e2b")
+    if not isinstance(provider, str) or provider not in ENVIRONMENTS:
+        raise ValueError("Unsupported sandbox provider.")
+    return provider
 
 
 def make_config(payload):
     return {
         "job_name": payload["runId"], "n_attempts": 1, "n_concurrent_trials": 1,
-        "environment": {"import_path": "e2b_environment:OneHourE2B"},
+        "environment": {"import_path": ENVIRONMENTS[sandbox_provider(payload)]},
         "agents": [{"name": payload["agent"], "model_name": payload["model"].strip()}],
         "tasks": [{"path": f"tasks/{payload['taskId']}"}],
     }
@@ -311,7 +335,7 @@ class Runner:
                     except subprocess.TimeoutExpired:
                         os.killpg(process.pid, signal.SIGKILL)
                         process.wait()
-                    error = "Run exceeded the one-hour limit and was stopped. The E2B sandbox also has a one-hour lifetime."
+                    error = "Run exceeded the one-hour limit and was stopped. Check the sandbox provider logs for cleanup status."
         except Exception as exception:
             error = str(exception)
             self.record_error(error)

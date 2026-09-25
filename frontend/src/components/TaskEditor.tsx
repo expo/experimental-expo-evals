@@ -14,6 +14,12 @@ import type {
 } from "../lib/cloud-types";
 import type { Agent, ConfigFile } from "../lib/types";
 import { createTaskFiles } from "../lib/new-task";
+import {
+  sandboxProvider,
+  selectSandboxProvider,
+  type SandboxProvider,
+} from "../lib/task-provider";
+import { easWorkflowTemplate } from "../lib/eas-workflow";
 
 type Conflict = Extract<CommitResult, { ok: false }>;
 const errorText = (error: unknown) =>
@@ -53,7 +59,7 @@ export function TaskEditor({
   const field: AssistInput["field"] | null =
     path === "instruction.md"
       ? "prompt"
-      : path === "environment/setup.sh"
+      : path.startsWith("environment/")
         ? "setup"
         : path === "tests/rubric.toml" || path === "tests/test.sh"
           ? "verifier"
@@ -84,6 +90,16 @@ export function TaskEditor({
     agent === "claude-code"
       ? data.settings.claudeConfigured
       : data.settings.codexConfigured;
+  let provider: SandboxProvider | null = null;
+  try {
+    provider = sandboxProvider(files);
+  } catch {
+    // Raw TOML may be incomplete while editing.
+  }
+  const providerConfigured =
+    provider === "e2b"
+      ? data.settings.e2bConfigured
+      : provider === "eas-workflows" && data.settings.easConfigured;
   const canRun =
     !!document &&
     !dirty &&
@@ -91,6 +107,7 @@ export function TaskEditor({
     !busy &&
     !running &&
     data.settings.runnerConfigured &&
+    providerConfigured &&
     agentConfigured &&
     !!model.trim();
 
@@ -351,6 +368,46 @@ export function TaskEditor({
             ))}
           </select>
         </label>
+        {path.startsWith("environment/") && (
+          <label className="field">
+            Sandbox
+            <select
+              aria-label="Sandbox provider"
+              value={provider ?? ""}
+              onChange={(event) => {
+                try {
+                  const next = event.target.value as SandboxProvider;
+                  setFiles(
+                    selectSandboxProvider(files, next, easWorkflowTemplate),
+                  );
+                  if (path !== "environment/setup.sh")
+                    setPath(
+                      next === "e2b"
+                        ? "environment/Dockerfile"
+                        : "environment/workflow.yml",
+                    );
+                  changed();
+                  setProposal(null);
+                } catch (error) {
+                  setError(errorText(error));
+                }
+              }}
+            >
+              {!provider && (
+                <option value="" disabled>
+                  Fix task.toml to select a sandbox
+                </option>
+              )}
+              <option value="e2b">E2B</option>
+              <option value="eas-workflows">EAS Workflows (macOS)</option>
+            </select>
+            {provider === "eas-workflows" && (
+              <span className="muted">
+                Experimental. Requires EAS Workflow SSH access.
+              </span>
+            )}
+          </label>
+        )}
         <textarea
           className="file-editor"
           aria-label={path}
@@ -600,9 +657,15 @@ export function TaskEditor({
                   ? "Another run is in progress."
                   : !data.settings.runnerConfigured
                     ? "Runner credentials required."
-                    : !agentConfigured
-                      ? `${agent === "codex" ? "OpenAI" : "Anthropic"} credentials required.`
-                      : `E2B · 1 attempt · commit ${document.baseCommit?.slice(0, 7)}`}
+                    : !provider
+                      ? "Fix the sandbox provider in task.toml."
+                      : !providerConfigured
+                        ? provider === "eas-workflows"
+                          ? "EAS project configuration required."
+                          : "E2B credentials required."
+                        : !agentConfigured
+                          ? `${agent === "codex" ? "OpenAI" : "Anthropic"} credentials required.`
+                          : `${provider === "eas-workflows" ? "EAS Workflows (macOS)" : "E2B"} · 1 attempt · commit ${document.baseCommit?.slice(0, 7)}`}
           </p>
         </section>
       )}

@@ -1,6 +1,7 @@
 import type { CloudContext, CloudEnv, RunnerPayload } from "./cloud-types";
 import type { Agent, RunDetail, RunSummary } from "./types";
 import { getTask } from "./cloud-store.ts";
+import { sandboxProvider } from "./task-provider.ts";
 
 type RunRow = {
   id: string;
@@ -196,7 +197,6 @@ export async function startRun(
     throw new Error("Choose a valid task revision, agent, and model.");
   if (
     !ctx.env.APP_ORIGIN ||
-    !ctx.env.E2B_API_KEY ||
     !ctx.env.EXPO_TOKEN ||
     !ctx.env.TYPESAFE_API_KEY ||
     !(input.agent === "codex"
@@ -207,6 +207,13 @@ export async function startRun(
       "Configure the application origin and runner credentials before running an eval.",
     );
   const task = await getTask(ctx, input.taskId);
+  const provider = sandboxProvider(task.files);
+  if (provider === "e2b" ? !ctx.env.E2B_API_KEY : !ctx.env.EAS_PROJECT_ID)
+    throw new Error(
+      provider === "e2b"
+        ? "Configure E2B_API_KEY before running an E2B eval."
+        : "Configure EAS_PROJECT_ID before running an EAS Workflows eval.",
+    );
   if (
     task.revision !== input.revision ||
     task.committedRevision !== task.revision ||
