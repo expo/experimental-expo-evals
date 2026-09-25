@@ -12,6 +12,7 @@ import {
 import { mergeFiles, taskPaths } from "./cloud-github.ts";
 import { assistDraft, validateProposal } from "./cloud-ai.ts";
 import { seedTask } from "./seed-task.ts";
+import { createTaskFiles } from "./new-task.ts";
 import type { AssistInput, CloudContext } from "./cloud-types";
 import type { ConfigFile } from "./types";
 
@@ -147,6 +148,37 @@ function githubFixture(initial = seedTask.files) {
   };
   return { fixture, fetcher };
 }
+
+test("new tasks start empty and save native files without inheriting the example", async () => {
+  const { ctx, sqlite } = database();
+  try {
+    const files = createTaskFiles("new-eval");
+    assert.equal(
+      files.find((file) => file.path.endsWith("/instruction.md"))?.content,
+      "",
+    );
+    assert.doesNotMatch(JSON.stringify(files), /coffee|expo|eas-cli|EXPO_TOKEN/i);
+    assert.throws(
+      () => validateFiles("new-eval", files),
+      /prompt cannot be empty/,
+    );
+    assert.equal(
+      validateFiles("new-eval", files, ctx.env, { allowEmptyPrompt: true }).length,
+      taskPaths.length,
+    );
+    const task = await saveDraft(ctx, {
+      taskId: "new-eval",
+      name: "New eval",
+      revision: null,
+      files: change(files, "instruction.md", "Write hello to /app/hello.txt.\n"),
+    });
+    assert.equal(task.id, "new-eval");
+    assert.deepEqual((await getTask(ctx, "new-eval")).files, task.files);
+    assert.deepEqual((await getTask(ctx, seedTask.id)).files, seedTask.files);
+  } finally {
+    sqlite.close();
+  }
+});
 
 test("shared drafts use SQL compare-and-swap and append-only revisions", async () => {
   const { ctx, sqlite } = database();

@@ -1,22 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import {
-  ArrowDownToLine,
-  ArrowUpRight,
-  Check,
-  ChevronRight,
-  Circle,
-  Clock3,
-  Coffee,
-  FileText,
-  FlaskConical,
-  LoaderCircle,
-  Plus,
-  Terminal,
-  X,
-} from "lucide-react";
 import { dashboard, runDetail } from "../lib/cloud.functions";
-import type { ConfigFile, RunDetail, RunSummary } from "../lib/types";
+import type { ConfigFile, RunDetail } from "../lib/types";
 import { TaskEditor } from "../components/TaskEditor";
 
 export const Route = createFileRoute("/")({
@@ -164,272 +149,121 @@ function App() {
   }
 
   const task = data.tasks.find((item) => item.id === taskId);
-  const activeRun = data.runs.find(
-    (run) => run.status === "queued" || run.status === "running",
-  );
-  const completed = data.runs.filter((run) =>
-    ["passed", "failed"].includes(run.status),
-  ).length;
-
   return (
-    <div className="app">
-      <header className="topbar">
-        <a className="brand" href="/" aria-label="EAS evals home">
-          <span className="brand-icon">
-            <FlaskConical size={19} />
-          </span>
-          <strong>EAS</strong>
-          <span className="brand-divider">/</span>
-          <span>evals</span>
-        </a>
-        <span className="local">
-          <span className="dot" />
-          {data.settings.local
-            ? "Local Cloudflare preview"
-            : "Company workspace"}
-        </span>
-      </header>
-
-      <main className="workspace">
-        <div className="page-heading">
-          <div>
-            <p className="eyebrow">EAS SIMULATOR</p>
-            <h1>Agent evaluations</h1>
-            <p className="subtitle">
-              Write tasks, commit changes, and compare agent runs.
-            </p>
-          </div>
-          <span className="powered">
-            Powered by Harbor
-            <ArrowUpRight size={14} />
-          </span>
-        </div>
-        <div className="workspace-context">
-          <span>
-            <span className="dot" />{" "}
-            {data.settings.local ? "Local D1 database" : "Shared D1 database"}
-          </span>
-          <span>
-            {data.settings.repository || "Git repository not connected"}{" "}
-            <span className="context-divider">/</span> {data.settings.branch}
-          </span>
-          <span className="workspace-user">{data.user}</span>
-          {!data.settings.local && (
-            <form action="/logout" method="post">
-              <button className="button" disabled={mutationPending}>
-                Sign out
+    <main className="workspace">
+      <nav className="tabs" aria-label="Workspace sections">
+        {(["tasks", "runs"] as const).map((item) => (
+          <button
+            key={item}
+            aria-pressed={view === item}
+            disabled={mutationPending}
+            onClick={() => switchView(item)}
+          >
+            {title(item)} <span className="muted">{data[item].length}</span>
+          </button>
+        ))}
+      </nav>
+      {refreshError && (
+        <p className="notice" role="status">
+          {refreshError}
+        </p>
+      )}
+      {view === "tasks" ? (
+        <div className="layout">
+          <aside className="sidebar" aria-label="Tasks">
+            <button
+              className="new-task"
+              disabled={mutationPending}
+              onClick={() => selectTask(null)}
+            >
+              New task
+            </button>
+            {data.tasks.map((item) => (
+              <button
+                key={item.id}
+                className="list-item"
+                aria-current={item.id === taskId ? "true" : undefined}
+                disabled={mutationPending}
+                onClick={() => selectTask(item.id)}
+              >
+                <span>{item.id}</span>
+                <small>
+                  {item.committedRevision === item.revision && item.baseCommit
+                    ? "Committed"
+                    : "Draft"}
+                </small>
               </button>
-            </form>
-          )}
+            ))}
+          </aside>
+          <TaskEditor
+            key={taskId ?? "new"}
+            task={task}
+            data={data}
+            onDirty={setDirty}
+            onBusy={setMutationPending}
+            onSaved={async (saved) => {
+              setData((current) => ({
+                ...current,
+                tasks: [
+                  saved,
+                  ...current.tasks.filter((item) => item.id !== saved.id),
+                ],
+              }));
+              setTaskId(saved.id);
+              setDirty(false);
+              void navigate({ search: { task: saved.id }, replace: true });
+            }}
+            onStarted={async (id) => {
+              await refresh();
+              setDirty(false);
+              setRunId(id);
+              setView("runs");
+              void navigate({ search: { run: id }, replace: true });
+            }}
+          />
         </div>
-        <nav className="tabs" aria-label="Workspace sections">
-          <button
-            className={view === "tasks" ? "active" : ""}
-            disabled={mutationPending}
-            onClick={() => switchView("tasks")}
-          >
-            <FileText size={16} />
-            Tasks<span className="count">{data.tasks.length}</span>
-          </button>
-          <button
-            className={view === "runs" ? "active" : ""}
-            disabled={mutationPending}
-            onClick={() => switchView("runs")}
-          >
-            <Terminal size={16} />
-            Runs<span className="count">{data.runs.length}</span>
-            {activeRun && <span className="dot running-dot" />}
-          </button>
-          <span className="tabs-note">
-            {activeRun
-              ? activeRun.status === "queued"
-                ? "An eval is queued"
-                : "An eval is running"
-              : `${completed} completed ${completed === 1 ? "run" : "runs"}`}
-          </span>
-        </nav>
-        {refreshError && (
-          <div className="notice" role="status">
-            {refreshError}
-          </div>
-        )}
-
-        {view === "tasks" ? (
-          <div className="task-layout">
-            <aside className="task-sidebar">
-              <div className="sidebar-heading">
-                <span>YOUR TASKS</span>
-                <button
-                  className="icon-button"
-                  title="New task"
-                  aria-label="New task"
-                  disabled={mutationPending}
-                  onClick={() => selectTask(null)}
-                >
-                  <Plus size={17} />
-                </button>
-              </div>
-              {data.tasks.map((item) => (
-                <button
-                  key={item.id}
-                  className={`task-item ${item.id === taskId ? "selected" : ""}`}
-                  disabled={mutationPending}
-                  onClick={() => selectTask(item.id)}
-                >
-                  <span className="task-symbol">
-                    {item.id.includes("coffee") ? (
-                      <Coffee size={17} />
-                    ) : (
-                      <FileText size={17} />
-                    )}
-                  </span>
-                  <span>
-                    <strong>{item.name}</strong>
-                    <small>
-                      {item.committedRevision === item.revision &&
-                      item.baseCommit
-                        ? "Committed"
-                        : "Draft"}{" "}
-                      · revision {item.revision}
-                    </small>
-                  </span>
-                  <ChevronRight size={14} />
-                </button>
-              ))}
-              {taskId === null && (
-                <div className="task-item selected">
-                  <span className="task-symbol">
-                    <Plus size={17} />
-                  </span>
-                  <span>
-                    <strong>New task</strong>
-                    <small>Draft</small>
-                  </span>
-                </div>
-              )}
-              <p className="sidebar-footnote">
-                Save drafts to D1.
-                <br />
-                Commit native files to Git.
+      ) : (
+        <div className="layout">
+          <aside className="sidebar" aria-label="Runs">
+            {data.runs.length === 0 && <p className="muted">No runs yet.</p>}
+            {data.runs.map((run) => (
+              <button
+                key={run.id}
+                className="list-item"
+                aria-current={run.id === runId ? "true" : undefined}
+                onClick={() => selectRun(run.id)}
+              >
+                <span>{run.task}</span>
+                <small>
+                  {title(run.status)} · {date(run.startedAt)}
+                </small>
+                <small>{run.model || run.agent}</small>
+              </button>
+            ))}
+          </aside>
+          <section className="content" aria-label="Run details">
+            {detailError ? (
+              <p className="notice error" role="alert">
+                {detailError}
               </p>
-            </aside>
-            <TaskEditor
-              key={taskId ?? "new"}
-              task={task}
-              data={data}
-              onDirty={setDirty}
-              onBusy={setMutationPending}
-              onSaved={async (saved) => {
-                setData((current) => ({
-                  ...current,
-                  tasks: [
-                    saved,
-                    ...current.tasks.filter((item) => item.id !== saved.id),
-                  ],
-                }));
-                setTaskId(saved.id);
-                setDirty(false);
-                void navigate({ search: { task: saved.id }, replace: true });
-              }}
-              onStarted={async (id) => {
-                await refresh();
-                setDirty(false);
-                setRunId(id);
-                setView("runs");
-                void navigate({ search: { run: id }, replace: true });
-              }}
-            />
-          </div>
-        ) : (
-          <div className="runs-layout">
-            <div className="runs-sidebar">
-              <div className="sidebar-heading">
-                <span>RUN HISTORY</span>
-                <span>{data.runs.length}</span>
-              </div>
-              {data.runs.length === 0 ? (
-                <div className="empty compact">
-                  <Terminal size={24} />
-                  <p>Your first run will appear here.</p>
-                </div>
-              ) : (
-                data.runs.map((run) => (
-                  <button
-                    key={run.id}
-                    className={`run-item ${run.id === runId ? "selected" : ""}`}
-                    onClick={() => selectRun(run.id)}
-                  >
-                    <div>
-                      <strong>{title(run.task)}</strong>
-                      <Status status={run.status} small />
-                    </div>
-                    <span className="run-model">
-                      {run.model?.split("/").pop() || run.agent}
-                    </span>
-                    <div className="run-meta">
-                      <span>{date(run.startedAt)}</span>
-                      <span>{duration(run.durationSec)}</span>
-                    </div>
-                  </button>
-                ))
-              )}
-            </div>
-            <section className="run-detail" aria-label="Run details">
-              {detailError ? (
-                <div className="notice error" role="alert">
-                  {detailError}
-                </div>
-              ) : detail ? (
-                <RunResults
-                  run={detail}
-                  commitSha={
-                    data.runs.find((run) => run.id === detail.id)?.commitSha ??
-                    null
-                  }
-                  repository={data.settings.repository}
-                />
-              ) : (
-                <div className="empty">
-                  <LoaderCircle className={runId ? "spin" : ""} size={24} />
-                  <p>
-                    {runId ? "Loading run…" : "Run a task to see its results."}
-                  </p>
-                </div>
-              )}
-            </section>
-          </div>
-        )}
-        <footer className="footer">
-          <span>D1 drafts · Git task versions · R2 results</span>
-          <span>E2B environment</span>
-        </footer>
-      </main>
-    </div>
-  );
-}
-
-function Status({
-  status,
-  small = false,
-}: {
-  status: RunSummary["status"];
-  small?: boolean;
-}) {
-  const Icon =
-    status === "passed"
-      ? Check
-      : status === "queued"
-        ? Clock3
-        : status === "running"
-          ? LoaderCircle
-          : status === "failed" || status === "error"
-            ? X
-            : Circle;
-  return (
-    <span className={`badge ${status} ${small ? "small" : ""}`}>
-      <Icon size={13} className={status === "running" ? "spin" : ""} />
-      {title(status)}
-    </span>
+            ) : detail ? (
+              <RunResults
+                run={detail}
+                commitSha={
+                  data.runs.find((run) => run.id === detail.id)?.commitSha ??
+                  null
+                }
+                repository={data.settings.repository}
+              />
+            ) : (
+              <p className="muted">
+                {runId ? "Loading run…" : "Select a run."}
+              </p>
+            )}
+          </section>
+        </div>
+      )}
+    </main>
   );
 }
 
@@ -445,250 +279,153 @@ function RunResults({
   const [tab, setTab] = useState<
     "scores" | "trace" | "config" | "files" | "log"
   >("scores");
-  const screenshot = run.artifacts.find(
-    (file) =>
-      file.image && /(?:screenshot|coffee-timer|screen[._-])/i.test(file.name),
-  );
   useEffect(() => setTab("scores"), [run.id]);
   return (
     <>
-      <div className="section-heading">
-        <div>
-          <p className="eyebrow">EVAL RESULT</p>
-          <h2>{title(run.task)}</h2>
-        </div>
-        <Status status={run.status} />
+      <div className="row">
+        <h1>{run.task}</h1>
+        <span className="muted">{title(run.status)}</span>
       </div>
-      <p className="result-model">
-        {run.agent} <span>/</span> {run.model}
-        <br />
-        <small>{date(run.startedAt)}</small>
+      <p className="muted">
+        {run.agent} · {run.model}
+      </p>
+      <p className="muted">
+        {date(run.startedAt)}
         {commitSha && (
           <>
-            <span>/</span>
+            {" "}
+            ·{" "}
             <a
-              className="commit-sha"
               href={`https://github.com/${repository}/commit/${commitSha}`}
               target="_blank"
               rel="noreferrer"
-              title="Open the task commit for this run"
             >
               {commitSha.slice(0, 7)}
             </a>
           </>
         )}
       </p>
-      <div className="metrics">
+      <dl className="metrics">
         <div>
-          <span>Overall score</span>
-          <strong>
-            {run.score == null ? "—" : `${Math.round(run.score * 100)}%`}
-          </strong>
+          <dt>Reward</dt>
+          <dd>{run.score ?? "—"}</dd>
         </div>
         <div>
-          <span>Duration</span>
-          <strong>{duration(run.durationSec)}</strong>
+          <dt>Duration</dt>
+          <dd>{duration(run.durationSec)}</dd>
         </div>
         <div>
-          <span>Agent cost</span>
-          <strong>{money(run.costUsd)}</strong>
+          <dt>Agent cost</dt>
+          <dd>{money(run.costUsd)}</dd>
         </div>
-      </div>
+      </dl>
       {run.error && (
-        <div className="notice error" role="alert">
+        <p className="notice error" role="alert">
           {run.error}
-        </div>
+        </p>
       )}
-      <nav className="result-tabs" aria-label="Run sections">
+      <nav className="tabs" aria-label="Run sections">
         {(["scores", "trace", "config", "files", "log"] as const).map(
           (item) => (
             <button
               key={item}
+              aria-pressed={tab === item}
               onClick={() => setTab(item)}
-              className={tab === item ? "active" : ""}
             >
-              {item === "trace"
-                ? "Agent trace"
-                : item === "config"
-                  ? "Configuration"
-                  : title(item)}
-              {item === "files" && (
-                <span className="count">{run.artifacts.length}</span>
-              )}
+              {item === "config" ? "Configuration" : title(item)}
             </button>
           ),
         )}
       </nav>
-      {tab === "config" && (
-        <div className="task-config">
-          <p className="config-explanation">
-            Recorded configuration for this run, with secret values redacted.
-            These are historical files, not today’s task settings.
-          </p>
-          {run.steps[0]?.role === "user" && (
-            <details className="config-file" open>
-              <summary>
-                <FileText size={14} />
-                <span>Task prompt recorded in the agent trace</span>
-                <ChevronRight size={14} />
-              </summary>
-              <pre>{run.steps[0].text}</pre>
-            </details>
-          )}
-          <p className="config-explanation">
-            This run keeps a copy of the committed task files and its run
-            configuration.
-          </p>
-          <ConfigFiles files={run.configFiles} />
-        </div>
-      )}
       {tab === "scores" && (
-        <div className="score-content">
+        <>
           {run.criteria.length ? (
             <>
-              <div className="criteria-heading">
-                <span>CRITERION</span>
-                <span>JEV PROBABILITY</span>
-              </div>
-              {run.criteria.map((criterion) => (
-                <div className="criterion" key={criterion.name}>
-                  <span
-                    className={`criterion-icon ${criterion.score >= 1 ? "pass" : "fail"}`}
-                  >
-                    {criterion.score >= 1 ? (
-                      <Check size={15} />
-                    ) : (
-                      <X size={15} />
-                    )}
-                  </span>
-                  <div>
-                    <strong>
-                      {title(criterion.name.replaceAll("_", "-"))}
-                    </strong>
-                    <p>{criterion.description}</p>
-                  </div>
-                  <span className="probability">
-                    {criterion.probability == null
-                      ? "—"
-                      : `${Math.round(criterion.probability * 100)}%`}
-                  </span>
-                </div>
-              ))}
-              <p className="score-note">
-                Scores use this run’s rubric and aggregation settings. JEV
-                assesses the agent trace; its score does not independently
-                verify visual or interactive correctness.
+              <table>
+                <thead>
+                  <tr>
+                    <th>Criterion</th>
+                    <th>Score</th>
+                    <th>JEV probability</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {run.criteria.map((criterion) => (
+                    <tr key={criterion.name}>
+                      <td>
+                        {criterion.name}
+                        <p className="muted">{criterion.description}</p>
+                      </td>
+                      <td>{criterion.score}</td>
+                      <td>{criterion.probability ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="muted">
+                JEV grades the recorded trace, not the app’s visual or
+                interactive correctness.
               </p>
             </>
           ) : (
-            <div className="empty compact">
-              <Circle size={23} />
-              <p>
-                {run.status === "queued"
-                  ? "Queued. Waiting for the Harbor runner to start."
-                  : run.status === "running"
-                    ? "The judge scores this task after the agent finishes."
-                    : "This run has no JEV criterion details."}
-              </p>
-            </div>
+            <p className="muted">No criterion scores yet.</p>
           )}
-          {screenshot && (
-            <div className="screenshot">
-              <div className="screenshot-heading">
-                <span>Captured screenshot</span>
-                <a
-                  href={artifactUrl(run.id, screenshot.path)}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open image
-                  <ArrowUpRight size={14} />
-                </a>
-              </div>
-              <img
-                src={artifactUrl(run.id, screenshot.path)}
-                alt="Screenshot captured by the agent during this eval"
-              />
-            </div>
-          )}
-        </div>
+        </>
       )}
-      {tab === "trace" && (
-        <div className="trace">
-          {run.steps.length ? (
-            run.steps.map((step) => (
-              <details key={step.id}>
-                <summary>
-                  <span className="step-number">{step.id}</span>
-                  <strong>{title(step.role)}</strong>
-                  <span className="step-preview">
-                    {step.text.slice(0, 110)}
-                  </span>
-                  <ChevronRight size={14} />
-                </summary>
-                <pre>{step.text}</pre>
-              </details>
-            ))
-          ) : (
-            <div className="empty compact">
-              <p>The trace appears as Harbor saves the agent’s conversation.</p>
-            </div>
-          )}
-        </div>
-      )}
-      {tab === "files" && (
-        <div className="files">
-          {run.artifacts.length ? (
-            run.artifacts.map((file) => (
+      {tab === "trace" &&
+        (run.steps.length ? (
+          run.steps.map((step) => (
+            <details key={step.id}>
+              <summary>
+                {step.id} · {step.role}
+              </summary>
+              <pre>{step.text}</pre>
+            </details>
+          ))
+        ) : (
+          <p className="muted">No trace yet.</p>
+        ))}
+      {tab === "config" && <ConfigFiles files={run.configFiles} />}
+      {tab === "files" &&
+        (run.artifacts.length ? (
+          run.artifacts.map((file) => (
+            <div className="artifact" key={file.path}>
               <a
-                key={file.path}
                 href={artifactUrl(run.id, file.path)}
-                target={file.image ? "_blank" : undefined}
+                target="_blank"
                 rel="noreferrer"
               >
-                <FileText size={15} />
-                <span>{file.path.replace(/^.*?\/artifacts\//, "")}</span>
-                <ArrowDownToLine size={15} />
+                {file.path}
               </a>
-            ))
-          ) : (
-            <div className="empty compact">
-              <p>Files appear after Harbor collects the run’s artifacts.</p>
+              {file.image && (
+                <details>
+                  <summary>Preview image</summary>
+                  <img
+                    src={artifactUrl(run.id, file.path)}
+                    alt={file.name}
+                    loading="lazy"
+                  />
+                </details>
+              )}
             </div>
-          )}
-        </div>
-      )}
-      {tab === "log" && (
-        <pre className="log">
-          {run.log ||
-            (run.status === "queued"
-              ? "Queued. Waiting for the Harbor runner to start…"
-              : "Waiting for Harbor output…")}
-        </pre>
-      )}
+          ))
+        ) : (
+          <p className="muted">No files yet.</p>
+        ))}
+      {tab === "log" && <pre>{run.log || "No output yet."}</pre>}
     </>
   );
 }
 
 function ConfigFiles({ files }: { files: ConfigFile[] }) {
-  return (
-    <div className="config-files">
-      {files.length ? (
-        files.map((file, index) => (
-          <details key={file.path} className="config-file" open={index < 2}>
-            <summary>
-              <FileText size={14} />
-              <span>{file.path}</span>
-              <ChevronRight size={14} />
-            </summary>
-            <pre>{file.content}</pre>
-          </details>
-        ))
-      ) : (
-        <p className="config-explanation">
-          No configuration files were recorded.
-        </p>
-      )}
-    </div>
+  return files.length ? (
+    files.map((file) => (
+      <details key={file.path}>
+        <summary>{file.path}</summary>
+        <pre>{file.content}</pre>
+      </details>
+    ))
+  ) : (
+    <p className="muted">No configuration recorded.</p>
   );
 }

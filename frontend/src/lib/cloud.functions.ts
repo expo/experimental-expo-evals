@@ -21,12 +21,10 @@ export const dashboard = createServerFn({ method: "GET" }).handler(
     ]);
     const e = ctx.env;
     return {
-      user: ctx.user,
       tasks,
       runs: history,
       settings: {
         repository: e.GITHUB_REPOSITORY || "",
-        branch: e.GITHUB_BRANCH || "main",
         gitConfigured: githubConfigured(e),
         aiConfigured: !!e.ANTHROPIC_API_KEY,
         runnerConfigured:

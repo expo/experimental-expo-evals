@@ -1,16 +1,5 @@
 import { useEffect, useState } from "react";
 import {
-  Check,
-  ChevronRight,
-  FileText,
-  GitCommitHorizontal,
-  LoaderCircle,
-  Play,
-  Save,
-  Sparkles,
-  X,
-} from "lucide-react";
-import {
   assistDraft,
   commitTask,
   saveDraft,
@@ -24,6 +13,7 @@ import type {
   TaskDocument,
 } from "../lib/cloud-types";
 import type { Agent, ConfigFile } from "../lib/types";
+import { createTaskFiles } from "../lib/new-task";
 
 type Conflict = Extract<CommitResult, { ok: false }>;
 const errorText = (error: unknown) =>
@@ -39,18 +29,6 @@ const slug = (value: string) =>
 const suffix = (path: string) => path.replace(/^tasks\/[^/]+\//, "");
 const read = (files: ConfigFile[], path: string) =>
   files.find((file) => suffix(file.path) === path)?.content ?? "";
-const names = {
-  prompt: "Task prompt",
-  setup: "Setup script",
-  verifier: "Verifier",
-};
-const templates = {
-  prompt: "Make the task more specific, with a clear outcome.",
-  setup: "Install the tools needed for this task.",
-  verifier:
-    "Write clear JEV criteria that can be assessed from the agent trace.",
-};
-
 export function TaskEditor({
   task,
   data,
@@ -66,21 +44,20 @@ export function TaskEditor({
   onSaved: (task: TaskDocument) => Promise<void>;
   onStarted: (id: string) => Promise<void>;
 }) {
-  const template =
-    data.tasks.find((item) => item.id === "coffee-timer") ?? data.tasks[0];
   const [document, setDocument] = useState(task);
   const [name, setName] = useState(task?.name ?? "");
   const [files, setFiles] = useState<ConfigFile[]>(
-    () =>
-      task?.files ??
-      template?.files.map((file) => ({
-        ...file,
-        content: suffix(file.path) === "instruction.md" ? "" : file.content,
-      })) ??
-      [],
+    () => task?.files ?? createTaskFiles(),
   );
-  const [section, setSection] = useState<"edit" | "config">("edit");
-  const [field, setField] = useState<AssistInput["field"]>("prompt");
+  const [path, setPath] = useState("instruction.md");
+  const field: AssistInput["field"] | null =
+    path === "instruction.md"
+      ? "prompt"
+      : path === "environment/setup.sh"
+        ? "setup"
+        : path === "tests/rubric.toml" || path === "tests/test.sh"
+          ? "verifier"
+          : null;
   const [instruction, setInstruction] = useState("");
   const [proposal, setProposal] = useState<AssistResult | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -162,18 +139,6 @@ export function TaskEditor({
     });
     changed();
   }
-  function downloadDraft() {
-    const blob = new Blob(
-      [JSON.stringify({ name, files: preparedFiles() }, null, 2)],
-      { type: "application/json" },
-    );
-    const url = URL.createObjectURL(blob);
-    const link = window.document.createElement("a");
-    link.href = url;
-    link.download = `${id || "task"}-draft.json`;
-    link.click();
-    URL.revokeObjectURL(url);
-  }
   function resetToLatest() {
     if (
       !task ||
@@ -206,7 +171,7 @@ export function TaskEditor({
       const saved = await saveDraft({
         data: {
           taskId: id,
-          name: name.trim(),
+          name: document?.name ?? id,
           revision: document?.revision ?? null,
           files: preparedFiles(),
         },
@@ -218,9 +183,7 @@ export function TaskEditor({
       setConflict(null);
       setResolutions({});
       await onSaved(saved);
-      setNotice(
-        `Draft revision ${saved.revision} saved to D1. Commit when it is ready to run.`,
-      );
+      setNotice("Draft saved.");
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -254,9 +217,7 @@ export function TaskEditor({
       setCommitMessage("");
       setProposal(null);
       await onSaved(result.task);
-      setNotice(
-        `Committed ${result.sha.slice(0, 7)}. This version is ready to run.`,
-      );
+      setNotice(`Committed ${result.sha.slice(0, 7)}.`);
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -264,6 +225,7 @@ export function TaskEditor({
     }
   }
   async function assist() {
+    if (!field) return;
     setBusy("assist");
     setError("");
     setAssistError("");
@@ -304,9 +266,7 @@ export function TaskEditor({
     ]);
     changed();
     setProposal(null);
-    setNotice(
-      "Suggestion applied to your browser draft. Review it, then save.",
-    );
+    setNotice("Suggestion applied. Save to keep it.");
   }
   async function run() {
     if (!document || !canRun) return;
@@ -330,573 +290,322 @@ export function TaskEditor({
   }
 
   return (
-    <section className="editor">
-      <div className="section-heading">
-        <div>
-          <p className="eyebrow">TASK DEFINITION</p>
-          <h2>{document?.name ?? "Create a task"}</h2>
-        </div>
-        <span
-          className={`badge ${!dirty && !uncommitted ? "passed" : "neutral"}`}
-        >
-          {dirty || !document
-            ? "Unsaved edits"
-            : uncommitted
-              ? "Saved draft"
-              : "Committed"}
+    <section className="content" aria-label="Task editor">
+      <div className="row">
+        <h1>{document?.id ?? "New task"}</h1>
+        <span className="muted">
+          {dirty || !document ? "Unsaved" : uncommitted ? "Draft" : "Committed"}
         </span>
-      </div>
-      <p className="save-explanation">
-        Save draft persists to D1. Commit changes creates a Git version. Runs
-        use the committed version.
-      </p>
-      {document && (
-        <div className="document-meta">
-          <span>
-            Revision {document.revision} · {document.updatedBy}
-          </span>
-          {document.baseCommit && (
-            <a
-              className="commit-sha"
-              href={`https://github.com/${data.settings.repository}/commit/${document.baseCommit}`}
-              target="_blank"
-              rel="noreferrer"
-              title="Open Git commit"
-            >
-              {document.baseCommit.slice(0, 7)}
-            </a>
-          )}
-        </div>
-      )}
-      {newerDraft && (
-        <div className="notice stale-notice" role="status">
-          <span>
-            A newer draft was saved by someone else. Your browser edits are
-            intact. Saving will check for this conflict.
-          </span>
-          <button className="button secondary" onClick={downloadDraft}>
-            Download my edits
-          </button>
-          <button
-            className="button secondary"
-            onClick={resetToLatest}
-            disabled={!!busy}
+        {document?.baseCommit && (
+          <a
+            href={`https://github.com/${data.settings.repository}/commit/${document.baseCommit}`}
+            target="_blank"
+            rel="noreferrer"
           >
+            {document.baseCommit.slice(0, 7)}
+          </a>
+        )}
+      </div>
+      {newerDraft && (
+        <div className="notice" role="status">
+          <p>
+            A newer draft exists. Copy any edits you want to keep before loading
+            it.
+          </p>
+          <button onClick={resetToLatest} disabled={!!busy}>
             Load latest draft
           </button>
         </div>
       )}
-      <nav className="result-tabs task-tabs" aria-label="Task sections">
+      <fieldset disabled={!!busy}>
+        {!document && (
+          <label className="field">
+            Task ID
+            <input
+              value={name}
+              onChange={(event) => {
+                setName(event.target.value);
+                changed();
+              }}
+              placeholder="my-task"
+              maxLength={64}
+            />
+          </label>
+        )}
+        <label className="field">
+          <span>tasks/{id || "<task-id>"}/</span>
+          <select
+            aria-label="Task file"
+            value={path}
+            onChange={(event) => {
+              setPath(event.target.value);
+              setProposal(null);
+              setInstruction("");
+              setAssistError("");
+            }}
+          >
+            {files.map((file) => (
+              <option key={suffix(file.path)} value={suffix(file.path)}>
+                {suffix(file.path)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <textarea
+          className="file-editor"
+          aria-label={path}
+          spellCheck={false}
+          value={read(files, path)}
+          onChange={(event) => updateFile(path, event.target.value)}
+        />
+        {field && (
+          <details className="assist">
+            <summary>Suggest an edit</summary>
+            <label className="field">
+              Instructions
+              <textarea
+                value={instruction}
+                onChange={(event) => setInstruction(event.target.value)}
+                placeholder="Describe the change"
+              />
+            </label>
+            <button
+              onClick={() => void assist()}
+              disabled={
+                !!busy ||
+                !data.settings.aiConfigured ||
+                !instruction.trim() ||
+                !id
+              }
+            >
+              {busy === "assist" ? "Writing…" : "Suggest changes"}
+            </button>
+            {!data.settings.aiConfigured && (
+              <p className="muted">Anthropic credentials required.</p>
+            )}
+            {assistError && (
+              <p className="notice error" role="alert">
+                {assistError}
+              </p>
+            )}
+          </details>
+        )}
+      </fieldset>
+      {proposal && (
+        <section className="notice" aria-label="Suggested changes">
+          <p>{proposal.explanation}</p>
+          {proposal.files.map((file) => (
+            <div key={file.path}>
+              <p>{suffix(file.path)}</p>
+              <div className="diff">
+                <div>
+                  <small>Current</small>
+                  <pre>{read(files, suffix(file.path))}</pre>
+                </div>
+                <div>
+                  <small>Suggested</small>
+                  <pre>{file.content}</pre>
+                </div>
+              </div>
+            </div>
+          ))}
+          <div className="row">
+            <button disabled={!!busy} onClick={() => setProposal(null)}>
+              Discard
+            </button>
+            <button disabled={!!busy} onClick={applyProposal}>
+              Apply to draft
+            </button>
+          </div>
+        </section>
+      )}
+      <div className="row actions">
         <button
-          className={section === "edit" ? "active" : ""}
-          onClick={() => setSection("edit")}
-          aria-pressed={section === "edit"}
+          onClick={() => void save()}
+          disabled={!!busy || !valid || (!dirty && !!document)}
         >
-          Editor
+          {busy === "save" ? "Saving…" : "Save draft"}
         </button>
-        <button
-          className={section === "config" ? "active" : ""}
-          onClick={() => setSection("config")}
-          aria-pressed={section === "config"}
-        >
-          Saved configuration
-        </button>
-      </nav>
-      {section === "edit" ? (
-        <>
-          <fieldset className="editor-fields" disabled={!!busy}>
-            {!document && (
-              <label className="field">
-                <span>Task name</span>
-                <input
-                  value={name}
-                  onChange={(event) => {
-                    setName(event.target.value);
-                    changed();
-                  }}
-                  placeholder="e.g. Weather app"
-                  maxLength={80}
-                />
-                <small>
-                  {id
-                    ? `tasks/${id}/`
-                    : "Creates a new task using the coffee timer environment."}
-                </small>
-              </label>
-            )}
-            <nav className="field-tabs" aria-label="Task files">
-              {(["prompt", "setup", "verifier"] as const).map((item) => (
-                <button
-                  type="button"
-                  key={item}
-                  className={field === item ? "active" : ""}
-                  aria-pressed={field === item}
-                  onClick={() => {
-                    setField(item);
-                    setProposal(null);
-                    setInstruction("");
-                  }}
-                >
-                  {names[item]}
-                </button>
-              ))}
-            </nav>
-            {field === "prompt" && (
-              <label className="field">
-                <span>
-                  Task prompt <code>instruction.md</code>
-                </span>
-                <small>The instruction Harbor gives to the agent.</small>
-                <textarea
-                  className="prompt-input main-file-input"
-                  value={read(files, "instruction.md")}
-                  onChange={(event) =>
-                    updateFile("instruction.md", event.target.value)
-                  }
-                  placeholder="Create a new Expo app…"
-                />
-              </label>
-            )}
-            {field === "setup" && (
-              <label className="field">
-                <span>
-                  Setup script <code>environment/setup.sh</code>
-                </span>
-                <small>
-                  Installs task dependencies in the E2B environment. Shell
-                  commands run during the environment build.
-                </small>
-                <textarea
-                  className="code-input main-file-input"
-                  spellCheck={false}
-                  value={read(files, "environment/setup.sh")}
-                  onChange={(event) =>
-                    updateFile("environment/setup.sh", event.target.value)
-                  }
-                />
-              </label>
-            )}
-            {field === "verifier" && (
-              <>
-                <label className="field">
-                  <span>
-                    Judge rubric <code>tests/rubric.toml</code>
-                  </span>
-                  <small>
-                    Native RewardKit configuration: judge, criteria, and score
-                    aggregation.
-                  </small>
-                  <textarea
-                    className="code-input rubric-input"
-                    spellCheck={false}
-                    value={read(files, "tests/rubric.toml")}
-                    onChange={(event) =>
-                      updateFile("tests/rubric.toml", event.target.value)
-                    }
-                  />
-                </label>
-                <details className="verifier-script">
-                  <summary>
-                    <ChevronRight size={14} /> Verifier entrypoint ·
-                    tests/test.sh
-                  </summary>
+        {dirty && <span className="muted">Unsaved changes</span>}
+      </div>
+      {document && uncommitted && (
+        <section className="panel" aria-label="Commit changes">
+          <div className="row">
+            <label className="field grow">
+              Commit message
+              <input
+                value={commitMessage}
+                onChange={(event) => setCommitMessage(event.target.value)}
+                disabled={!!busy}
+                maxLength={160}
+                placeholder="describe the change"
+              />
+            </label>
+            <button
+              onClick={() => void commit()}
+              disabled={
+                !!busy ||
+                dirty ||
+                !data.settings.gitConfigured ||
+                !commitMessage.trim() ||
+                !!conflict
+              }
+            >
+              {busy === "commit" ? "Committing…" : "Commit changes"}
+            </button>
+          </div>
+          {dirty && <p className="muted">Save before committing.</p>}
+          {!data.settings.gitConfigured && (
+            <p className="muted">GitHub connection required.</p>
+          )}
+          {conflict && (
+            <section className="notice" aria-label="Resolve merge conflicts">
+              <p>{conflict.message}</p>
+              {conflict.conflicts.map((item) => (
+                <div key={item.path}>
+                  <p>{item.path}</p>
+                  <div className="diff">
+                    <div>
+                      <small>Saved draft</small>
+                      <pre>{item.ours}</pre>
+                      <button
+                        disabled={!!busy}
+                        onClick={() =>
+                          setResolutions((current) => ({
+                            ...current,
+                            [item.path]: item.ours,
+                          }))
+                        }
+                      >
+                        Use draft
+                      </button>
+                    </div>
+                    <div>
+                      <small>Repository</small>
+                      <pre>{item.theirs}</pre>
+                      <button
+                        disabled={!!busy}
+                        onClick={() =>
+                          setResolutions((current) => ({
+                            ...current,
+                            [item.path]: item.theirs,
+                          }))
+                        }
+                      >
+                        Use repository
+                      </button>
+                    </div>
+                  </div>
+                  <details>
+                    <summary>Common base</summary>
+                    <pre>{item.base}</pre>
+                  </details>
                   <label className="field">
-                    <span className="sr-only">Verifier entrypoint</span>
+                    Merged content
                     <textarea
-                      className="code-input main-file-input"
                       spellCheck={false}
-                      value={read(files, "tests/test.sh")}
+                      aria-label={`Merged content for ${item.path}`}
+                      value={resolutions[item.path] ?? item.ours}
+                      disabled={!!busy}
                       onChange={(event) =>
-                        updateFile("tests/test.sh", event.target.value)
+                        setResolutions((current) => ({
+                          ...current,
+                          [item.path]: event.target.value,
+                        }))
                       }
                     />
                   </label>
-                </details>
-              </>
-            )}
-            <div className="assist-panel">
-              <label className="field">
-                <span>
-                  <Sparkles size={14} /> Help write {names[field].toLowerCase()}
-                </span>
-                <small>
-                  The assistant suggests changes for review. Nothing is saved or
-                  committed automatically.
-                </small>
-                <textarea
-                  className="assist-input"
-                  value={instruction}
-                  onChange={(event) => setInstruction(event.target.value)}
-                  placeholder={templates[field]}
-                  aria-label={`Instructions for ${names[field].toLowerCase()} assistant`}
-                />
-              </label>
-              <div className="assist-footer">
-                <span>
-                  {data.settings.aiConfigured
-                    ? "Uses the workspace’s Anthropic API key."
-                    : "Add an Anthropic API key to enable suggestions."}
-                </span>
-                <button
-                  className="button secondary"
-                  type="button"
-                  onClick={() => void assist()}
-                  disabled={
-                    !!busy ||
-                    !data.settings.aiConfigured ||
-                    !instruction.trim() ||
-                    !id
-                  }
-                >
-                  {busy === "assist" ? (
-                    <LoaderCircle size={14} className="spin" />
-                  ) : (
-                    <Sparkles size={14} />
-                  )}{" "}
-                  {busy === "assist"
-                    ? "Writing suggestion…"
-                    : "Suggest changes"}
-                </button>
-              </div>
-              {assistError && (
-                <div className="notice error" role="alert">
-                  {assistError}
-                </div>
-              )}
-            </div>
-          </fieldset>
-          {proposal && (
-            <section className="proposal-panel" aria-label="Suggested changes">
-              <div className="review-heading">
-                <strong>Review suggestion</strong>
-                <span className="badge neutral">Not applied</span>
-              </div>
-              <p className="config-explanation">{proposal.explanation}</p>
-              {proposal.files.map((file) => (
-                <div className="proposal-file" key={file.path}>
-                  <p className="file-path">{suffix(file.path)}</p>
-                  <div className="diff-columns">
-                    <div>
-                      <span>Current draft</span>
-                      <pre>
-                        {read(files, suffix(file.path)) || "Empty file"}
-                      </pre>
-                    </div>
-                    <div>
-                      <span>Suggested</span>
-                      <pre>{file.content || "Empty file"}</pre>
-                    </div>
-                  </div>
                 </div>
               ))}
-              <div className="review-actions">
+              <div className="row">
                 <button
-                  className="button secondary"
                   disabled={!!busy}
-                  onClick={() => setProposal(null)}
+                  onClick={() => {
+                    setConflict(null);
+                    setResolutions({});
+                  }}
                 >
-                  <X size={14} />
-                  Discard
+                  Cancel
                 </button>
                 <button
-                  className="button primary"
-                  disabled={!!busy}
-                  onClick={applyProposal}
+                  onClick={() => void commit()}
+                  disabled={
+                    !!busy ||
+                    dirty ||
+                    !commitMessage.trim() ||
+                    !conflict.conflicts.every((item) =>
+                      Object.hasOwn(resolutions, item.path),
+                    )
+                  }
                 >
-                  <Check size={14} />
-                  Apply to draft
+                  {busy === "commit" ? "Committing…" : "Commit resolved files"}
                 </button>
               </div>
             </section>
           )}
-          <div className="save-row">
-            <span>
-              {dirty
-                ? "Changes are only in this browser until saved."
-                : document
-                  ? "All draft changes are saved to D1."
-                  : "Start with a name and task prompt."}
-            </span>
-            <button
-              className="button secondary"
-              onClick={() => void save()}
-              disabled={!!busy || !valid || (!dirty && !!document)}
-            >
-              {busy === "save" ? (
-                <LoaderCircle size={15} className="spin" />
-              ) : (
-                <Save size={15} />
-              )}
-              Save draft
-            </button>
-          </div>
-        </>
-      ) : (
-        <div className="task-config">
-          <p className="config-explanation">
-            Exact native files in the saved D1 draft.{" "}
-            {dirty ? "Your browser has unsaved edits." : ""}
-          </p>
-          {document?.files.map((file, index) => (
-            <details className="config-file" key={file.path} open={index < 2}>
-              <summary>
-                <FileText size={14} />
-                <span>{file.path}</span>
-                <ChevronRight size={14} />
-              </summary>
-              <pre>{file.content}</pre>
-            </details>
-          ))}
-          {!document && (
-            <p className="config-explanation">
-              Save this task to see its persisted configuration.
-            </p>
-          )}
-        </div>
+        </section>
       )}
-      <div className="commit-panel">
-        <div className="launch-title">
-          <span className="eyebrow">COMMIT CHANGES</span>
-          <span className="subtle">{data.settings.branch}</span>
-        </div>
-        <p className="config-explanation">
-          {!data.settings.gitConfigured
-            ? "Connect the GitHub bot to enable commits. Saved drafts still persist in D1."
-            : dirty
-              ? "Save your draft before committing."
-              : !uncommitted
-                ? "This saved revision is already committed."
-                : "Creates one commit containing this task’s saved files. Other task changes are kept."}
-        </p>
-        <div className="commit-controls">
-          <label className="field">
-            <span className="sr-only">Commit message</span>
-            <input
-              placeholder="describe the change"
-              aria-label="Commit message"
-              value={commitMessage}
-              onChange={(event) => setCommitMessage(event.target.value)}
-              disabled={!!busy}
-              maxLength={160}
-            />
-          </label>
-          <button
-            className="button secondary"
-            onClick={() => void commit()}
-            disabled={
-              !!busy ||
-              dirty ||
-              !document ||
-              !uncommitted ||
-              !data.settings.gitConfigured ||
-              !commitMessage.trim() ||
-              !!conflict
-            }
-          >
-            {busy === "commit" ? (
-              <LoaderCircle size={15} className="spin" />
-            ) : (
-              <GitCommitHorizontal size={15} />
-            )}
-            Commit changes
-          </button>
-        </div>
-        <p className="launch-note">
-          Concurrent edits to different files merge automatically. If the same
-          file changed, review both versions below before committing.
-        </p>
-        {conflict && (
-          <section
-            className="conflict-panel"
-            aria-label="Resolve merge conflicts"
-          >
-            <div className="review-heading">
-              <strong>
-                Resolve {conflict.conflicts.length} conflicting{" "}
-                {conflict.conflicts.length === 1 ? "file" : "files"}
-              </strong>
-              <span className="commit-sha">{conflict.head.slice(0, 7)}</span>
-            </div>
-            <p className="config-explanation">
-              {conflict.message} Choose a version or edit the merged content.
-              The branch is checked again when you commit.
-            </p>
-            {conflict.conflicts.map((item) => (
-              <div className="conflict-file" key={item.path}>
-                <p className="file-path">{item.path}</p>
-                <div className="diff-columns">
-                  <div>
-                    <span>Your saved draft</span>
-                    <pre>{item.ours || "Empty file"}</pre>
-                    <button
-                      className="button secondary"
-                      disabled={!!busy}
-                      onClick={() =>
-                        setResolutions((current) => ({
-                          ...current,
-                          [item.path]: item.ours,
-                        }))
-                      }
-                    >
-                      Use draft
-                    </button>
-                  </div>
-                  <div>
-                    <span>Current repository</span>
-                    <pre>{item.theirs || "Empty file"}</pre>
-                    <button
-                      className="button secondary"
-                      disabled={!!busy}
-                      onClick={() =>
-                        setResolutions((current) => ({
-                          ...current,
-                          [item.path]: item.theirs,
-                        }))
-                      }
-                    >
-                      Use repository
-                    </button>
-                  </div>
-                </div>
-                <details className="conflict-base">
-                  <summary>Common base</summary>
-                  <pre>{item.base || "File did not exist"}</pre>
-                </details>
-                <label className="field">
-                  <span>
-                    Merged content{" "}
-                    {Object.hasOwn(resolutions, item.path) ? (
-                      <Check size={14} />
-                    ) : (
-                      <span className="label-tag">Choose or edit</span>
-                    )}
-                  </span>
-                  <textarea
-                    className="code-input"
-                    aria-label={`Merged content for ${item.path}`}
-                    value={resolutions[item.path] ?? item.ours}
-                    disabled={!!busy}
-                    onChange={(event) =>
-                      setResolutions((current) => ({
-                        ...current,
-                        [item.path]: event.target.value,
-                      }))
-                    }
-                  />
-                </label>
-              </div>
-            ))}
-            <div className="review-actions">
-              <button
-                className="button secondary"
-                disabled={!!busy}
-                onClick={() => {
-                  setConflict(null);
-                  setResolutions({});
-                }}
-              >
-                Cancel resolution
-              </button>
-              <button
-                className="button primary"
-                onClick={() => void commit()}
-                disabled={
-                  !!busy ||
-                  dirty ||
-                  !commitMessage.trim() ||
-                  !conflict.conflicts.every((item) =>
-                    Object.hasOwn(resolutions, item.path),
-                  )
-                }
-              >
-                {busy === "commit" ? (
-                  <LoaderCircle size={14} className="spin" />
-                ) : (
-                  <GitCommitHorizontal size={14} />
-                )}
-                Commit resolved files
-              </button>
-            </div>
-          </section>
-        )}
-      </div>
       {error && (
-        <div className="notice error" role="alert">
+        <p className="notice error" role="alert">
           {error}
-        </div>
+        </p>
       )}
       {notice && (
-        <div className="notice success" role="status">
-          <Check size={16} />
+        <p className="muted" role="status">
           {notice}
-        </div>
+        </p>
       )}
-      <div className="launch-panel">
-        <div className="launch-title">
-          <span className="eyebrow">RUN COMMITTED TASK</span>
-          <span className="subtle">1 attempt · E2B</span>
-        </div>
-        <div className="run-controls">
-          <label className="field">
-            <span>Agent</span>
-            <select
-              value={agent}
-              disabled={!!busy}
-              onChange={(event) => {
-                const next = event.target.value as Agent;
-                setAgent(next);
-                setModel(
-                  next === "claude-code"
-                    ? "anthropic/claude-opus-5-5"
-                    : "openai/gpt-5.4",
-                );
-              }}
-            >
-              <option value="claude-code">Claude Code</option>
-              <option value="codex">Codex</option>
-            </select>
-          </label>
-          <label className="field model-field">
-            <span>Model</span>
-            <input
-              value={model}
-              disabled={!!busy}
-              onChange={(event) => setModel(event.target.value)}
-              placeholder="provider/model"
-              spellCheck={false}
-            />
-          </label>
-          <button
-            className="button primary"
-            disabled={!canRun}
-            onClick={() => void run()}
-          >
-            {busy === "run" ? (
-              <LoaderCircle size={15} className="spin" />
-            ) : (
-              <Play size={15} fill="currentColor" />
-            )}
-            {busy === "run" ? "Starting…" : "Run eval"}
-          </button>
-        </div>
-        <p className="launch-note">
-          {data.settings.local
-            ? "The local web preview does not start Harbor containers. Run evals from the deployed dashboard, or use the native Harbor CLI locally."
-            : dirty || uncommitted
-              ? "Save and commit all changes before running this task."
-              : running
-                ? "Another eval is queued or running. Follow its progress in Runs."
-                : !data.settings.runnerConfigured
-                  ? "Configure the Harbor runner and E2B, Expo, and TypeSafe credentials to run evals."
-                  : !agentConfigured
-                    ? `Add ${agent === "codex" ? "OpenAI" : "Anthropic"} credentials to run this agent.`
-                    : `Runs task revision ${document?.revision} from commit ${document?.baseCommit?.slice(0, 7)}. Model and service usage apply.`}
-        </p>
-        <p className="launch-note">
-          Agent and model apply to this run only. Starting a run does not change
-          or commit task files.
-        </p>
-      </div>
+      {document && (
+        <section className="panel" aria-label="Run task">
+          <div className="row">
+            <label className="field">
+              Agent
+              <select
+                value={agent}
+                disabled={!!busy}
+                onChange={(event) => {
+                  const next = event.target.value as Agent;
+                  setAgent(next);
+                  setModel(
+                    next === "claude-code"
+                      ? "anthropic/claude-opus-5-5"
+                      : "openai/gpt-5.4",
+                  );
+                }}
+              >
+                <option value="claude-code">Claude Code</option>
+                <option value="codex">Codex</option>
+              </select>
+            </label>
+            <label className="field grow">
+              Model
+              <input
+                value={model}
+                disabled={!!busy}
+                onChange={(event) => setModel(event.target.value)}
+                placeholder="provider/model"
+                spellCheck={false}
+              />
+            </label>
+            <button disabled={!canRun} onClick={() => void run()}>
+              {busy === "run" ? "Starting…" : "Run"}
+            </button>
+          </div>
+          <p className="muted">
+            {data.settings.local
+              ? "Run from the deployed app or Harbor CLI."
+              : dirty || uncommitted
+                ? "Save and commit before running."
+                : running
+                  ? "Another run is in progress."
+                  : !data.settings.runnerConfigured
+                    ? "Runner credentials required."
+                    : !agentConfigured
+                      ? `${agent === "codex" ? "OpenAI" : "Anthropic"} credentials required.`
+                      : `E2B · 1 attempt · commit ${document.baseCommit?.slice(0, 7)}`}
+          </p>
+        </section>
+      )}
     </section>
   );
 }

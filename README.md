@@ -25,11 +25,13 @@ known API credentials from the root `.env` into ignored `.dev.vars`, without
 printing them. Production uses Wrangler secrets and a shared username/password
 login. Cloudflare Access is an optional upgrade.
 
-Edit the **Task prompt**, **Setup script**, or **Verifier**. Verifier includes
-both the JEV `rubric.toml` and the small RewardKit `test.sh` bridge. Configuration
-shows the complete native task files, preserving exact text and formatting.
+The UI has two views: Tasks and Runs. Select a task file to edit its exact contents,
+including `instruction.md`, `environment/setup.sh`, and `tests/rubric.toml`.
+New tasks start with a blank prompt, an empty setup script, and one generic JEV
+criterion. They do not copy the coffee-timer task. The environment Dockerfile,
+`task.toml`, and RewardKit `tests/test.sh` are available in the same file selector.
 
-- **Ask assistant** returns a proposal using the configured Anthropic model.
+- **Suggest an edit** returns a proposal using the configured Anthropic model.
   Review it, then Apply or Discard. Applying only changes the browser draft.
 - **Save draft** writes an atomic D1 revision shared with other users. It does
   not create a Git commit or write into this machine's `tasks/` directory.
@@ -37,12 +39,12 @@ shows the complete native task files, preserving exact text and formatting.
   A GitHub App supplies the bot identity with access to this repository only.
   Independent file changes merge. Conflicting files show draft and Git versions
   and require an explicit choice or edited resolution. No force push is used.
-- **Run eval** requires the saved revision to be committed. The runner receives
+- **Run** requires the saved revision to be committed. The runner receives
   an immutable copy of those files and their commit SHA. Agent/model choices
   apply to the run. Closing the browser does not stop the container.
 
-If a shared draft changes while you edit, stale saves are rejected. Download
-your browser draft before loading the latest version if you need to keep it.
+If a shared draft changes while you edit, stale saves are rejected. Copy any
+browser edits you want to keep before loading the latest version.
 The first version allows one active eval at a time. Other users wait until it
 finishes. It has no queued backlog or automatic paid retries.
 
