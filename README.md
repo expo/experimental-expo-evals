@@ -50,16 +50,19 @@ Changing the agent model does not change the JEV judge.
 ## Compare skills
 
 Run the same task and model with and without Expo skills using Harbor's native
-`--skills` option. This URL pins the skills to a specific commit:
+`--skills` option. Harbor resolves this source and records its Git commit and per-skill
+hashes in the job and trial lock files:
 
 ```sh
 uv run harbor run --env-file .env -c harbor.yaml --job-name coffee-baseline
 uv run harbor run --env-file .env -c harbor.yaml --job-name coffee-expo-skills \
-  --skills https://github.com/expo/skills/tree/efa52f0a9d2176db75992736281c77da1b714fa3/plugins/expo/skills
+  --skills https://github.com/expo/skills/tree/main/plugins/expo/skills
 ```
 
 Choose new job names when repeating the comparison. Harbor resolves the skills
-and installs them for the selected agent.
+and installs them for the selected agent. Future jobs may resolve newer skills;
+inspect the saved lock files when comparing results. Harbor 0.23 requires a
+named ref here; its resolver does not accept a raw commit SHA in the URL.
 
 ## Results
 
