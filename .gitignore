@@ -8,11 +8,5 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 .DS_Store
-frontend/node_modules/
-frontend/dist/
-frontend/.tanstack/
-frontend/.output/
-frontend/.wrangler/
-frontend/.dev.vars
-frontend/.dev.vars.*
-!frontend/.dev.vars.example
+# Local remnants from before the dashboard moved to its own repository.
+frontend/

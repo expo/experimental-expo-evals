@@ -1,12 +1,12 @@
 # Repository conventions
 
-- Keep the eval prompt in `tasks/coffee-timer/instruction.md` unchanged unless requested.
-- Keep this a minimal Harbor example. Use its CLI and RewardKit; do not add a custom runner or grading framework. Environment adapters implement Harbor's sandbox contract for E2B and EAS Workflows.
-- The TanStack Start frontend runs on Cloudflare Workers. D1 stores drafts, revisions, and run records; explicit commits publish native task files to GitHub. A Cloudflare Container invokes the Harbor CLI with the task's selected sandbox provider. Keep Harbor's native file format and grading engine; do not introduce another eval format.
-- Require authentication in production. The first shared deployment uses a username/password login; Cloudflare Access remains an optional upgrade. Never silently overwrite concurrent edits or force-push task commits. Run immutable committed snapshots and keep credentials server-side.
-- Validate with Harbor's `--dry-run` and RewardKit's `discover()` after changes.
-- Keep credentials in the ignored `.env`. Never put them in images, configs, or fixtures.
-- Eval runs consume model and EAS usage. Default to one attempt and one concurrent trial.
+- Keep `tasks/coffee-timer/instruction.md` and the JEV rubric unchanged unless requested.
+- Use native Harbor tasks, configuration, CLI commands, and RewardKit. Keep web and hosted runner code in the separate dashboard repository. Do not add another task format or grading framework.
+- E2B is the default. The one-hour adapter is required with Harbor 0.23 on the current E2B plan. Keep the EAS Workflows adapter as a deferred prototype until its transport works end to end.
+- Keep the baseline free of Expo skills. Compare skills with Harbor's native `--skills` option and a pinned source commit.
+- Use RewardKit's existing trajectory formatter to keep judge inputs within its token budget. Put grading criteria in the rubric.
+- Validate changes with Harbor's `--dry-run`, RewardKit's `discover()`, and the adapter tests. Real evals consume model and EAS usage; default to one attempt and one concurrent trial.
+- Keep credentials in ignored `.env` files and results in ignored `jobs/`. Never commit secrets or generated run artifacts.
 - The judge grades the recorded trace. Do not describe its score as proof of visual or interactive correctness.
 - Commit messages must be one lowercase-starting line without conventional prefixes or co-author lines.
 - PR titles use a bracketed scope such as `[evals]`; do not credit AI in the body.

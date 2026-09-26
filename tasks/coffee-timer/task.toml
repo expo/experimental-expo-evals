@@ -21,6 +21,3 @@ memory_mb = 4096
 
 [environment.env]
 EXPO_TOKEN = "${EXPO_TOKEN}"
-
-[metadata]
-sandbox_provider = "eas-workflows"

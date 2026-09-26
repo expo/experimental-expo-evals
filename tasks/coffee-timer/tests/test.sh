@@ -6,7 +6,7 @@ exec uv run --no-project --python 3.12 \
 from pathlib import Path
 from rewardkit import format_trajectory, run
 
-# JEV accepts text files, not RewardKit's atif-trajectory option.
+# Bound the trace size for JEV's input budget using RewardKit's formatter.
 Path("/logs/verifier/trajectory.txt").write_text(
     format_trajectory("/logs/agent/trajectory.json", max_tokens=16000)
 )
