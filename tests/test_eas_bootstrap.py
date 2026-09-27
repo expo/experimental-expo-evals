@@ -7,7 +7,7 @@ import unittest
 
 class EASBootstrapTest(unittest.TestCase):
     def test_bootstrap_rejects_machines_outside_eas_before_mutation(self):
-        bootstrap = Path(__file__).resolve().parents[1] / "eas_provider/bootstrap.sh"
+        bootstrap = Path(__file__).resolve().parents[1] / "environments/eas/bootstrap.sh"
         with tempfile.TemporaryDirectory() as directory:
             tools = Path(directory)
             marker = tools / "mutated"

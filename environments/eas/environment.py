@@ -1,4 +1,4 @@
-"""Harbor environment backed by one EAS Workflows macOS VM.
+"""Deferred Harbor environment prototype for one EAS Workflows macOS VM.
 
 Harbor stays on the controller. The EAS CLI supplies authenticated SSH; commands
 and file contents travel over its stdin, never through workflow inputs or argv.
@@ -20,167 +20,12 @@ import uuid
 from importlib.resources import files
 from pathlib import Path
 
-import yaml
 from harbor.environments.base import BaseEnvironment, ExecResult
 from harbor.environments.capabilities import EnvironmentResourceCapabilities
 
 MAX_TRANSFER_BYTES = 128 * 1024 * 1024
-ROOT_ALIASES = ("app", "logs", "tests", "solution", "installed-agent", "harbor")
 RPC_COMMAND = "sudo -n /private/tmp/harbor-python /private/tmp/harbor-rpc.py"
 TERMINAL_STATUSES = {"SUCCESS", "FAILURE", "CANCELED"}
-
-# One request per SSH connection. A standalone stdlib script also makes transport
-# behavior testable without an EAS machine or a model invocation.
-REMOTE_SCRIPT = r"""
-import base64, io, json, os, pathlib, pwd, shutil, signal, subprocess, sys, tarfile, uuid
-
-MAX_BYTES = 128 * 1024 * 1024
-ALIASES = {"/" + name for name in ("app", "logs", "tests", "solution", "installed-agent", "harbor")}
-
-def account(user=None):
-    user = user if user is not None else os.environ.get("SUDO_USER", str(os.getuid()))
-    return pwd.getpwuid(int(user)) if str(user).isdigit() else pwd.getpwnam(str(user))
-
-def environment(request, identity):
-    result = {key: os.environ[key] for key in ("PATH", "TMPDIR", "LANG", "LC_ALL", "TERM", "DEVELOPER_DIR", "SDKROOT") if key in os.environ}
-    path_file = pathlib.Path("/private/tmp/harbor-path")
-    if path_file.is_file():
-        result["PATH"] = path_file.read_text().strip()
-    result.update(HOME=identity.pw_dir, USER=identity.pw_name, LOGNAME=identity.pw_name, SHELL="/bin/bash")
-    result.update(request.get("env") or {})
-    return result
-
-def drop_privileges(identity):
-    if os.geteuid() == 0:
-        os.initgroups(identity.pw_name, identity.pw_gid)
-        os.setgid(identity.pw_gid)
-        os.setuid(identity.pw_uid)
-    elif os.geteuid() != identity.pw_uid:
-        raise PermissionError("Cannot select the requested sandbox user")
-
-def bounded_file(path):
-    with open(path, "rb") as stream:
-        data = stream.read(MAX_BYTES + 1)
-    if len(data) > MAX_BYTES:
-        raise ValueError("Transfer exceeds 128 MiB")
-    return data
-
-def unpack(data, destination):
-    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
-        total = 0
-        for member in archive.getmembers():
-            total += member.size
-            if total > MAX_BYTES or not (member.isfile() or member.isdir()):
-                raise ValueError("Archive exceeds limits or contains links/special files")
-        archive.extractall(destination, filter="data")
-
-def owner(path):
-    identity = account()
-    if os.geteuid() == 0:
-        for child in [path, *path.rglob("*")] if path.is_dir() else [path]:
-            if not child.is_symlink():
-                os.chown(child, identity.pw_uid, identity.pw_gid)
-
-def reset_path(value):
-    path = pathlib.Path(value)
-    if str(path) in ALIASES:
-        target = path.resolve()
-        expected = pathlib.Path("/private/tmp/harbor") / path.name
-        if target != expected:
-            raise ValueError("Harbor root alias changed")
-        return target
-    return path
-
-def main(request):
-    operation = request["op"]
-    if operation == "ready":
-        ready = pathlib.Path("/private/tmp/harbor-ready").is_file()
-        return {"ready": ready and all(pathlib.Path(p).resolve() == pathlib.Path("/private/tmp/harbor") / pathlib.Path(p).name for p in ALIASES)}
-    if operation == "exec":
-        identity = account(request.get("user"))
-        command_id = str(uuid.UUID(request["id"]))
-        state = pathlib.Path("/tmp/harbor-command-" + command_id)
-        canceled = state.with_suffix(".canceled")
-        if canceled.exists():
-            return {"timeout": True}
-        process = subprocess.Popen(["/bin/bash", "-c", request["command"]], cwd=request["cwd"], env=environment(request, identity), stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, preexec_fn=lambda: drop_privileges(identity))
-        state.write_text(str(process.pid))
-        state.chmod(0o600)
-        try:
-            if canceled.exists():
-                os.killpg(process.pid, signal.SIGKILL)
-            try:
-                stdout, stderr = process.communicate(timeout=request["timeout"])
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.communicate()
-                return {"timeout": True}
-            return {"stdout": stdout.decode("utf-8", "replace"), "stderr": stderr.decode("utf-8", "replace"), "return_code": process.returncode}
-        finally:
-            state.unlink(missing_ok=True)
-            canceled.unlink(missing_ok=True)
-    if operation == "cancel":
-        state = pathlib.Path("/tmp/harbor-command-" + str(uuid.UUID(request["id"])))
-        state.with_suffix(".canceled").touch(mode=0o600)
-        try:
-            pid = int(state.read_text())
-            os.killpg(pid, signal.SIGKILL)
-        except (FileNotFoundError, ProcessLookupError):
-            pass
-        return {}
-    if operation in ("put", "put_dir"):
-        data = base64.b64decode(request["data"], validate=True)
-        if len(data) > MAX_BYTES:
-            raise ValueError("Transfer exceeds 128 MiB")
-        path = pathlib.Path(request["path"])
-        if operation == "put":
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(data)
-            path.chmod(request["mode"] & 0o777)
-        else:
-            path.mkdir(parents=True, exist_ok=True)
-            unpack(data, path)
-        owner(path)
-        return {}
-    if operation == "get":
-        return {"data": base64.b64encode(bounded_file(request["path"])).decode()}
-    if operation == "get_dir":
-        source = pathlib.Path(request["path"])
-        if not source.is_dir():
-            raise NotADirectoryError(str(source))
-        buffer = io.BytesIO()
-        total = 0
-        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
-            for path in sorted(source.rglob("*")):
-                if path.is_symlink() or not (path.is_file() or path.is_dir()):
-                    continue
-                total += path.stat().st_size if path.is_file() else 0
-                if total > MAX_BYTES:
-                    raise ValueError("Directory transfer exceeds 128 MiB")
-                archive.add(path, arcname=str(path.relative_to(source)), recursive=False)
-        return {"data": base64.b64encode(buffer.getvalue()).decode()}
-    if operation == "reset":
-        for value in request["remove"]:
-            path = reset_path(value)
-            if path.is_symlink() or path.is_file():
-                path.unlink()
-            elif path.exists():
-                shutil.rmtree(path)
-        for value in request["create"]:
-            reset_path(value).mkdir(parents=True, exist_ok=True)
-        for value in request["chmod"]:
-            reset_path(value).chmod(0o777)
-        return {"stdout": "", "stderr": "", "return_code": 0}
-    raise ValueError("Unknown sandbox operation")
-
-try:
-    request = json.loads(sys.stdin.buffer.read(MAX_BYTES * 2))
-    response = main(request)
-except Exception as error:
-    # Do not include request contents or environment values in protocol errors.
-    response = {"error": type(error).__name__ + ": " + str(error)}
-print(json.dumps(response))
-"""
 
 
 class EASWorkflowEnvironment(BaseEnvironment):
@@ -210,25 +55,10 @@ class EASWorkflowEnvironment(BaseEnvironment):
         return EnvironmentResourceCapabilities()
 
     def _validate_definition(self) -> None:
-        definition = self.environment_dir / "workflow.yml"
-        if not definition.is_file():
-            raise FileNotFoundError("EAS Workflows requires environment/workflow.yml")
         if not (self.environment_dir / "setup.sh").is_file():
             raise FileNotFoundError("EAS Workflows requires environment/setup.sh")
-        config = yaml.safe_load(definition.read_text())
-        jobs = config.get("jobs", {}) if isinstance(config, dict) else {}
-        if len(jobs) != 1:
-            raise ValueError(
-                "An EAS sandbox workflow must contain exactly one macOS job"
-            )
-        self._job_key, job = next(iter(jobs.items()))
-        if not isinstance(job, dict) or job.get("runs_on") not in (
-            "macos-medium",
-            "macos-large",
-        ):
-            raise ValueError("The EAS sandbox job must use macos-medium or macos-large")
         if self.task_env_config.docker_image:
-            raise ValueError("EAS macOS uses workflow image, not docker_image")
+            raise ValueError("EAS macOS uses the provider workflow image, not docker_image")
 
     def _prepare_bundle(self) -> Path:
         uuid.UUID(self.project_id)
@@ -236,21 +66,20 @@ class EASWorkflowEnvironment(BaseEnvironment):
         root = Path(self._bundle.name)
         environment = root / "environment"
         environment.mkdir()
-        for name in ("workflow.yml", "setup.sh"):
-            source = self.environment_dir / name
-            if source.is_symlink():
-                raise ValueError(f"Environment source cannot be a symlink: {name}")
-            if source.is_file():
-                if source.stat().st_size > 1024 * 1024:
-                    raise ValueError(f"Environment source is too large: {name}")
-                shutil.copy2(source, environment / name)
+        setup = self.environment_dir / "setup.sh"
+        if setup.is_symlink():
+            raise ValueError("Environment source cannot be a symlink: setup.sh")
+        if setup.stat().st_size > 1024 * 1024:
+            raise ValueError("Environment source is too large: setup.sh")
+        shutil.copy2(setup, environment / "setup.sh")
+        resources = files(__package__)
         workflow_dir = root / ".eas" / "workflows"
         workflow_dir.mkdir(parents=True)
-        shutil.copy2(environment / "workflow.yml", workflow_dir / "harbor.yml")
-        (root / "bootstrap.sh").write_bytes(
-            files("eas_provider").joinpath("bootstrap.sh").read_bytes()
+        (workflow_dir / "harbor.yml").write_bytes(
+            resources.joinpath("workflow.yml").read_bytes()
         )
-        (root / "harbor_rpc.py").write_text(REMOTE_SCRIPT)
+        (root / "bootstrap.sh").write_bytes(resources.joinpath("bootstrap.sh").read_bytes())
+        (root / "harbor_rpc.py").write_bytes(resources.joinpath("rpc.py").read_bytes())
         (root / "app.json").write_text(
             json.dumps(
                 {
@@ -402,7 +231,7 @@ class EASWorkflowEnvironment(BaseEnvironment):
                     (
                         job
                         for job in state.get("jobs", [])
-                        if job.get("key") == self._job_key
+                        if job.get("key") == "sandbox"
                     ),
                     None,
                 )

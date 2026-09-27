@@ -13,8 +13,7 @@ requires = ["setuptools>=80"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["e2b_environment", "eas_environment"]
-packages = ["eas_provider"]
+packages = ["environments", "environments.eas"]
 
 [tool.setuptools.package-data]
-eas_provider = ["*.sh", "*.yml"]
+"environments.eas" = ["*.sh", "*.yml"]

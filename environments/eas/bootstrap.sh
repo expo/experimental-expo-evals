@@ -48,10 +48,8 @@ env -i HOME="$HOME" USER="$(id -un)" LOGNAME="$(id -un)" \
 printf '%s' "$PATH" > /private/tmp/harbor-path
 touch /private/tmp/harbor-ready
 
-while [ ! -f /private/tmp/harbor-stop ]; do
-  if [ "$SECONDS" -ge "$deadline" ]; then
-    echo 'The Harbor sandbox reached its 55-minute lifetime.' >&2
-    exit 1
-  fi
+while [ "$SECONDS" -lt "$deadline" ]; do
   sleep 2
 done
+echo 'The Harbor sandbox reached its 55-minute lifetime.' >&2
+exit 1

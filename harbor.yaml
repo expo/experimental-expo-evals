@@ -1,7 +1,7 @@
 n_attempts: 1
 n_concurrent_trials: 1
 environment:
-  import_path: e2b_environment:OneHourE2B
+  import_path: environments.e2b:OneHourE2B
 agents:
   - name: claude-code
     model_name: anthropic/claude-opus-5-5

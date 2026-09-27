@@ -1,4 +1,4 @@
-"""Harbor 0.23 requests 24 hours; E2B Hobby permits one hour."""
+"""Harbor 0.23 requests 24 hours; E2B's base plan permits one hour."""
 
 from e2b import AsyncSandbox
 from harbor.environments.e2b import E2BEnvironment

@@ -9,6 +9,7 @@ import tarfile
 import tempfile
 import unittest
 import uuid
+from importlib.resources import files
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -16,7 +17,9 @@ from harbor.models.task.config import EnvironmentConfig, NetworkMode, NetworkPol
 from harbor.models.trial.config import ResourceMode
 from harbor.models.trial.paths import TrialPaths
 
-from eas_environment import REMOTE_SCRIPT, EASWorkflowEnvironment
+from environments.eas.environment import EASWorkflowEnvironment
+
+RPC_SCRIPT = files("environments.eas").joinpath("rpc.py")
 
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
@@ -26,9 +29,6 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.root = Path(self.temporary.name)
         self.environment = self.root / "environment"
         self.environment.mkdir()
-        (self.environment / "workflow.yml").write_text(
-            "jobs:\n  sandbox:\n    runs_on: macos-medium\n    steps:\n      - run: bash bootstrap.sh\n"
-        )
         (self.environment / "setup.sh").write_text("#!/bin/bash\ntrue\n")
 
     def adapter(self, **kwargs):
@@ -50,23 +50,43 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             self.adapter(cpu_enforcement_policy=ResourceMode.LIMIT)
 
-    def test_rejects_non_macos_or_multiple_jobs(self):
-        for definition in ("jobs: {}", "jobs:\n  sandbox:\n    runs_on: linux-medium"):
-            (self.environment / "workflow.yml").write_text(definition)
-            with self.assertRaises(ValueError):
-                self.adapter()
+    def test_task_only_requires_setup_script(self):
+        self.adapter()
+        (self.environment / "setup.sh").unlink()
+        with self.assertRaisesRegex(FileNotFoundError, "environment/setup.sh"):
+            self.adapter()
+
+    def test_rejects_docker_image_override_for_macos(self):
+        with self.assertRaisesRegex(ValueError, "provider workflow image"):
+            EASWorkflowEnvironment(
+                environment_dir=self.environment,
+                environment_name="example",
+                session_id="example__env",
+                trial_paths=TrialPaths(self.root / "trial"),
+                task_env_config=EnvironmentConfig(docker_image="node:24"),
+            )
 
     async def test_bundle_only_contains_allowed_environment_sources(self):
         (self.environment / ".env").write_text("SECRET=not-for-upload")
         (self.environment / "Dockerfile").write_text("FROM node:24")
+        (self.environment / "workflow.yml").write_text("UNTRUSTED_WORKFLOW=not-for-upload")
         adapter = self.adapter()
         root = adapter._prepare_bundle()
         self.assertEqual(
             {p.name for p in (root / "environment").iterdir()},
-            {"setup.sh", "workflow.yml"},
+            {"setup.sh"},
         )
+        self.assertEqual(
+            (root / ".eas/workflows/harbor.yml").read_bytes(),
+            files("environments.eas").joinpath("workflow.yml").read_bytes(),
+        )
+        self.assertEqual((root / "harbor_rpc.py").read_bytes(), RPC_SCRIPT.read_bytes())
+        self.assertNotIn("environments.eas.rpc", sys.modules)
         self.assertNotIn(
             "SECRET", "".join(p.read_text() for p in root.rglob("*") if p.is_file())
+        )
+        self.assertNotIn(
+            "UNTRUSTED_WORKFLOW", "".join(p.read_text() for p in root.rglob("*") if p.is_file())
         )
         self.assertEqual(
             json.loads((root / "app.json").read_text())["expo"]["extra"]["eas"][
@@ -76,6 +96,17 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         await adapter.stop()
         self.assertFalse(root.exists())
+
+    async def test_bundle_rejects_symlinked_setup(self):
+        (self.root / "outside.sh").write_text("must not be copied")
+        (self.environment / "setup.sh").unlink()
+        (self.environment / "setup.sh").symlink_to(self.root / "outside.sh")
+        adapter = self.adapter()
+        try:
+            with self.assertRaisesRegex(ValueError, "cannot be a symlink"):
+                adapter._prepare_bundle()
+        finally:
+            await adapter.stop()
 
     async def test_start_waits_for_matching_job_and_readiness_then_confirms_stop(self):
         adapter = self.adapter()
@@ -233,7 +264,7 @@ class RemoteProtocolTests(unittest.TestCase):
 
     def request(self, payload, *, env=None):
         result = subprocess.run(
-            [sys.executable, "-c", REMOTE_SCRIPT],
+            [sys.executable, str(RPC_SCRIPT)],
             input=json.dumps(payload),
             capture_output=True,
             text=True,
@@ -290,7 +321,7 @@ class RemoteProtocolTests(unittest.TestCase):
     def test_cancel_kills_running_command_group(self):
         command = self.command("sleep 30 & wait", timeout=60)
         process = subprocess.Popen(
-            [sys.executable, "-c", REMOTE_SCRIPT],
+            [sys.executable, str(RPC_SCRIPT)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
