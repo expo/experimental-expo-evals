@@ -7,7 +7,7 @@ Claude Code runs in E2B. RewardKit uses JEV to grade the agent trace.
 ```text
 harbor.yaml                       # Task, agent, model, and sandbox selection
 pyproject.toml / uv.lock           # Python dependencies and adapter installation
-tasks/coffee-timer/
+tasks/eas-simulator-basic/
   instruction.md                  # Prompt
   task.toml                       # Timeouts, credentials, and artifacts
   environment/
@@ -59,12 +59,35 @@ uv run harbor run --env-file .env -c harbor.yaml --n-attempts 3 --n-concurrent 1
 ```
 
 Replace `MODEL_ID` and set `OPENAI_API_KEY` for Codex. This does not change the judge.
-To compare Expo skills, repeat the run with:
+
+## Compare configurations
+
+Keep one task, `eas-simulator-basic`, with the same prompt, setup, and rubric.
+Change skills at run time using [Harbor's native skills support](https://docs.harborframework.com/core-concepts/jobs/skills).
+This avoids maintaining a second copy of the task.
+
+| Dimension | Examples |
+| --- | --- |
+| Task | `eas-simulator-basic` |
+| Skills | None, Expo skills |
+| Sandbox provider | E2B; EAS Workflows once its adapter works |
+| Harness | Claude Code, Codex |
+| Model | The model selected for the harness |
+
+For a skills comparison, run both commands from the same repository commit with
+the same harness, model, sandbox, and attempt count:
 
 ```sh
 uv run harbor run --env-file .env -c harbor.yaml \
+  --job-name eas-simulator-basic-baseline
+uv run harbor run --env-file .env -c harbor.yaml \
+  --job-name eas-simulator-basic-expo-skills \
   --skills https://github.com/expo/skills/tree/main/plugins/expo/skills
 ```
+
+These are job names, not separate task directories. Use a new job name when
+repeating a run. In the dashboard, run the same task with Scenario set to Baseline,
+then Expo skills; the Runs comparison keeps those rows separate.
 
 Harbor installs the skills and records their resolved Git commit and hashes in
 its lock files. Future runs can resolve newer skills. Harbor 0.23 requires a
@@ -105,6 +128,6 @@ Validate without starting an eval:
 
 ```sh
 uv run harbor run --env-file .env -c harbor.yaml --dry-run
-uv run python -c 'from rewardkit import discover; print(discover("tasks/coffee-timer/tests"))'
+uv run python -c 'from rewardkit import discover; print(discover("tasks/eas-simulator-basic/tests"))'
 uv run python -m unittest discover -s tests -p 'test_*.py'
 ```

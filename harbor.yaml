@@ -6,4 +6,4 @@ agents:
   - name: claude-code
     model_name: anthropic/claude-opus-5-5
 tasks:
-  - path: tasks/coffee-timer
+  - path: tasks/eas-simulator-basic
