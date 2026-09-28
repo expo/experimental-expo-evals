@@ -42,8 +42,8 @@ uv sync --locked
 cp .env.example .env
 ```
 
-Copy `.env` only for a fresh checkout. Fill in the Anthropic, E2B, Expo, and
-Typesafe keys, then validate or run:
+Copy `.env` only for a fresh checkout. Fill in Claude Code credentials, E2B,
+Expo, and Typesafe keys, then validate or run:
 
 ```sh
 uv run harbor run --env-file .env -c harbor.yaml --dry-run
@@ -53,6 +53,25 @@ uv run harbor run --env-file .env -c harbor.yaml
 The default runs both tasks sequentially, one attempt each, with Claude Opus 5.5.
 A real run consumes model, E2B, and EAS usage. E2B builds the Dockerfile remotely;
 local Docker is unnecessary. Harbor installs the agent.
+
+For Claude subscription usage, run `claude setup-token` and put the resulting
+token in `.env`:
+
+```dotenv
+CLAUDE_CODE_OAUTH_TOKEN=your-token
+CLAUDE_FORCE_OAUTH=1
+```
+
+Harbor supports both variables natively. `CLAUDE_FORCE_OAUTH=1` prevents an
+existing `ANTHROPIC_API_KEY` from taking precedence and fails if the token is
+missing. For API billing, leave the token empty, set the flag to `0`, and provide
+`ANTHROPIC_API_KEY`. These settings do not change JEV authentication or billing.
+The [OAuth token](https://code.claude.com/docs/en/authentication#generate-a-long-lived-token)
+uses your Claude subscription and its usage limits. Some models, including
+[Fable](https://code.claude.com/docs/en/model-config#fable-and-usage-credits), can
+bill usage credits depending on your plan, including in noninteractive runs.
+The hosted dashboard needs the token as a Cloudflare secret; it does not read
+this local `.env` file. See its [deployment guide](https://github.com/davidmokos/expo-evals-dashboard/blob/main/DEPLOYMENT.md).
 
 Use native Harbor flags to change the harness, model, or number of attempts:
 
