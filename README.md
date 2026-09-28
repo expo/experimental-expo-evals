@@ -147,10 +147,11 @@ uv run harbor run --env-file .env -c harbor-ios.yaml --dry-run
 uv run harbor run --env-file .env -c harbor-ios.yaml
 ```
 
-EAS execution is experimental. The staging smoke test reached a running macOS
-worker, but SSH hung while opening a session after successful authentication.
-Harbor cannot start the agent until that connection works. An end-to-end app
-run and the provider's command/file transport are not yet verified.
+EAS execution is experimental. The hosted staging attempt completed task setup,
+including Maestro installation and iPhone simulator boot. SSH then failed with
+`channel 0: open failed: connect failed: upstream unavailable` before the agent
+started. An end-to-end app run and the provider's command/file transport remain
+unverified until the relay can connect to the worker.
 
 Set `EXPO_TOKEN_STAGING` and `EAS_PROJECT_ID_STAGING` in `.env` for staging.
 Our staging project is `@expo/expo-evals-test`, ID
