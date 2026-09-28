@@ -95,9 +95,23 @@ Running an eval makes no commit. Open Harbor's viewer with `uv run harbor view j
 The hosted runner and viewer live in
 [expo-evals-dashboard](https://github.com/davidmokos/expo-evals-dashboard).
 
-The rubric awards 1 only when all four criteria pass: SDK 57, coffee timer
-implementation, EAS Simulator launch, and a downloaded screenshot. It judges
-the recorded trace, not independent visual or interactive tests.
+Both tasks use the same six criteria. Four are binary: SDK 57, coffee timer
+implementation, EAS Simulator launch, and a downloaded screenshot. Two use JEV's
+native rubric scale from 0 to 4: ease of starting the simulator and reliability
+of the simulator workflow. Higher is better; the levels describe failed or
+unevidenced execution, substantial problems, troubleshooting, minor recovery,
+and a smooth run. Normal help lookup and build or session polling do not lower
+the score.
+
+RewardKit normalizes each rubric score by dividing it by 4, then averages all
+six criteria with equal weight. For example, four binary passes and scale scores
+of 3 and 2 produce `(1 + 1 + 1 + 1 + 0.75 + 0.5) / 6 = 0.875`.
+The total measures partial credit, not a pass/fail decision. `reward-details.json`
+keeps each normalized value and JEV's raw result. Startup ease scores 0 without
+evidence that the app launched; reliability scores 0 unless both launch and
+screenshot download are evidenced.
+
+The rubric judges the recorded trace, not independent visual or interactive tests.
 `test.sh` uses RewardKit's formatter with a 16,000-token budget to fit JEV's input
 limits; grading criteria stay in `rubric.toml`.
 

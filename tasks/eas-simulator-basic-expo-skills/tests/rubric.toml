@@ -22,5 +22,29 @@ name = "downloaded_screenshot"
 description = "Tool results show a screenshot of the running app was successfully downloaded to a local file. A remote URL or an unsupported claim alone does not pass."
 type = "binary"
 
+[[criterion]]
+name = "simulator_startup_ease"
+description = "Rate how easily the agent got this app running on EAS Simulator, on a 0-4 scale. Use recorded commands and tool results through the first successful app launch. Reading help, following documented setup, and normal build or session polling do not count as difficulty. Count simulator-related confusion, failed attempts, and recovery work; exclude unrelated app implementation work. An empty simulator or an unsupported success claim is not a successful app launch."
+type = "rubric"
+levels = [
+  "0: No successful launch of this app on EAS Simulator is evidenced.",
+  "1: The app launches only after extensive trial and error, multiple blocking problems, or substantial manual workarounds.",
+  "2: The app launches after several failed attempts or one substantial troubleshooting detour.",
+  "3: The app launches after one minor correction or quick retry, with little extra work.",
+  "4: The app launches through the documented flow without failed attempts, confusion, or workarounds.",
+]
+
+[[criterion]]
+name = "eas_simulator_reliability"
+description = "Rate how free of problems the agent's EAS Simulator workflow was, on a 0-4 scale, from the first simulator command through screenshot download. Use observed errors and recovery work, not the agent's final claims. Count problems from using eas simulator, including invalid commands, failed operations, broken sessions, and workarounds. Exclude unrelated app implementation errors, help lookup, harmless warnings, and expected startup or build polling. Successful app launch and screenshot download must both be evidenced to score above 0; an unattempted or unevidenced workflow is not evidence of reliability."
+type = "rubric"
+levels = [
+  "0: Successful app launch and screenshot download are not both evidenced, or an unresolved simulator problem blocks either operation.",
+  "1: The workflow completes only after multiple disruptive failures, repeated session restarts, or substantial manual workarounds.",
+  "2: The workflow completes despite repeated recoverable errors or one substantial workaround.",
+  "3: The workflow completes with one isolated minor error that the agent quickly recovers from.",
+  "4: The workflow completes without simulator errors, failed operations, session failures, or workarounds.",
+]
+
 [scoring]
-aggregation = "all-pass"
+aggregation = "weighted-mean"
