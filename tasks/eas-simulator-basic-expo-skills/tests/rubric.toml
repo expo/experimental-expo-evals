@@ -1,0 +1,26 @@
+[judge]
+judge = "jev"
+files = ["/logs/verifier/trajectory.txt"]
+
+[[criterion]]
+name = "expo_sdk_57"
+description = "The recorded file changes and tool results show that the agent created a new Expo app using SDK 57. A statement in its final answer alone is not sufficient evidence."
+type = "binary"
+
+[[criterion]]
+name = "coffee_timer"
+description = "The recorded implementation shows a coffee timer with a countdown and controls to operate it. Judge the implementation evidence, not just the agent's claim that it finished."
+type = "binary"
+
+[[criterion]]
+name = "eas_simulator"
+description = "Tool results show that the agent successfully ran this app on EAS Simulator. Merely reading help, starting an empty simulator, or attempting a failed launch does not pass."
+type = "binary"
+
+[[criterion]]
+name = "downloaded_screenshot"
+description = "Tool results show a screenshot of the running app was successfully downloaded to a local file. A remote URL or an unsupported claim alone does not pass."
+type = "binary"
+
+[scoring]
+aggregation = "all-pass"

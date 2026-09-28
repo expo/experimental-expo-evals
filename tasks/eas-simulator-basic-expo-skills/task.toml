@@ -1,0 +1,24 @@
+schema_version = "1.4"
+
+[[artifacts]]
+source = "/app"
+destination = "app"
+exclude = [ "**/node_modules/**", "**/.git/**", "**/.env*", "**/.expo/**", "**/.npm/**", "**/*.log" ]
+
+[agent]
+timeout_sec = 1800
+
+[verifier]
+timeout_sec = 300
+
+[verifier.env]
+TYPESAFE_API_KEY = "${TYPESAFE_API_KEY}"
+
+[environment]
+skills_dir = "/skills"
+build_timeout_sec = 900
+cpus = 2
+memory_mb = 4096
+
+[environment.env]
+EXPO_TOKEN = "${EXPO_TOKEN}"

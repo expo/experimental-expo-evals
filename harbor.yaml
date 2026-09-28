@@ -7,3 +7,4 @@ agents:
     model_name: anthropic/claude-opus-5-5
 tasks:
   - path: tasks/eas-simulator-basic
+  - path: tasks/eas-simulator-basic-expo-skills

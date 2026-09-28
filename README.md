@@ -1,21 +1,24 @@
 # Expo evals
 
-One native [Harbor task](https://docs.harborframework.com/core-concepts/tasks/overview):
+Two native [Harbor tasks](https://docs.harborframework.com/core-concepts/tasks/overview):
 create an Expo SDK 57 coffee timer, run it on EAS Simulator, and download a screenshot.
-Claude Code runs in E2B. RewardKit uses JEV to grade the agent trace.
+Both tasks have the same prompt and JEV rubric. One includes Expo skills.
+Claude Code runs in E2B; RewardKit grades the agent trace.
 
 ```text
 harbor.yaml                       # Task, agent, model, and sandbox selection
 pyproject.toml / uv.lock           # Python dependencies and adapter installation
-tasks/eas-simulator-basic/
-  instruction.md                  # Prompt
-  task.toml                       # Timeouts, credentials, and artifacts
-  environment/
-    Dockerfile                    # E2B image
-    setup.sh                      # Installs EAS CLI
-  tests/
-    test.sh                       # Calls RewardKit
-    rubric.toml                   # JEV criteria
+tasks/
+  eas-simulator-basic/
+    instruction.md                # Prompt
+    task.toml                     # Timeouts, credentials, and artifacts
+    environment/
+      Dockerfile                  # E2B image
+      setup.sh                    # Installs EAS CLI
+    tests/
+      test.sh                     # Calls RewardKit
+      rubric.toml                 # JEV criteria
+  eas-simulator-basic-expo-skills/ # Same structure, adds skills in setup
 environments/
   e2b.py                          # Small E2B timeout override
   eas/                            # Deferred macOS provider
@@ -47,9 +50,9 @@ uv run harbor run --env-file .env -c harbor.yaml --dry-run
 uv run harbor run --env-file .env -c harbor.yaml
 ```
 
-The default is one attempt with Claude Opus 5.5. A real run consumes model, E2B,
-and EAS usage. E2B builds the Dockerfile remotely; local Docker is unnecessary.
-Harbor installs the agent. The task installs EAS CLI without Expo skills.
+The default runs both tasks sequentially, one attempt each, with Claude Opus 5.5.
+A real run consumes model, E2B, and EAS usage. E2B builds the Dockerfile remotely;
+local Docker is unnecessary. Harbor installs the agent.
 
 Use native Harbor flags to change the harness, model, or number of attempts:
 
@@ -60,38 +63,30 @@ uv run harbor run --env-file .env -c harbor.yaml --n-attempts 3 --n-concurrent 1
 
 Replace `MODEL_ID` and set `OPENAI_API_KEY` for Codex. This does not change the judge.
 
-## Compare configurations
+## Compare tasks
 
-Keep one task, `eas-simulator-basic`, with the same prompt, setup, and rubric.
-Change skills at run time using [Harbor's native skills support](https://docs.harborframework.com/core-concepts/jobs/skills).
-This avoids maintaining a second copy of the task.
-
-| Dimension | Examples |
-| --- | --- |
-| Task | `eas-simulator-basic` |
-| Skills | None, Expo skills |
-| Sandbox provider | E2B; EAS Workflows once its adapter works |
-| Harness | Claude Code, Codex |
-| Model | The model selected for the harness |
-
-For a skills comparison, run both commands from the same repository commit with
-the same harness, model, sandbox, and attempt count:
+`harbor.yaml` lists both task directories. Harbor expands its task list, agent
+configurations, and attempts into trials. To run only one task, use its native
+path override:
 
 ```sh
-uv run harbor run --env-file .env -c harbor.yaml \
-  --job-name eas-simulator-basic-baseline
-uv run harbor run --env-file .env -c harbor.yaml \
-  --job-name eas-simulator-basic-expo-skills \
-  --skills https://github.com/expo/skills/tree/main/plugins/expo/skills
+uv run harbor run --env-file .env -c harbor.yaml -p tasks/eas-simulator-basic
+uv run harbor run --env-file .env -c harbor.yaml -p tasks/eas-simulator-basic-expo-skills
 ```
 
-These are job names, not separate task directories. Use a new job name when
-repeating a run. In the dashboard, run the same task with Scenario set to Baseline,
-then Expo skills; the Runs comparison keeps those rows separate.
+The skills task installs Expo skills from commit
+`efa52f0a9d2176db75992736281c77da1b714fa3` into `/skills` during environment setup
+and declares `environment.skills_dir = "/skills"` in `task.toml`.
+[Harbor registers these task skills](https://docs.harborframework.com/core-concepts/tasks/skills)
+with Claude Code or Codex. The baseline has no skills directory.
 
-Harbor installs the skills and records their resolved Git commit and hashes in
-its lock files. Future runs can resolve newer skills. Harbor 0.23 requires a
-named ref for this URL; its resolver does not accept a raw commit SHA.
+Keep prompts and rubrics identical for this comparison. Each task is
+self-contained; there is no inheritance or task-generation layer. Skill versions
+are pinned in the setup script because build-installed skills do not receive
+Harbor's per-skill runtime lock entries.
+
+The dashboard discovers both tasks from Git. Select and run each task using the
+same commit, harness, model, and attempt count, then compare their results in Runs.
 
 ## Results
 
@@ -128,6 +123,6 @@ Validate without starting an eval:
 
 ```sh
 uv run harbor run --env-file .env -c harbor.yaml --dry-run
-uv run python -c 'from rewardkit import discover; print(discover("tasks/eas-simulator-basic/tests"))'
+uv run python -c 'from pathlib import Path; from rewardkit import discover; print({p.parent.name: len(discover(p)) for p in Path("tasks").glob("*/tests")})'
 uv run python -m unittest discover -s tests -p 'test_*.py'
 ```
