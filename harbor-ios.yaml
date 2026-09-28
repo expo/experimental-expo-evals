@@ -1,0 +1,14 @@
+n_attempts: 1
+n_concurrent_trials: 1
+retry:
+  max_retries: 0
+environment:
+  import_path: environments.eas.environment:EASWorkflowEnvironment
+  kwargs:
+    stage: staging
+agents:
+  - name: claude-code
+    model_name: anthropic/claude-opus-5-5
+tasks:
+  - path: tasks/ios-voice-recorder
+  - path: tasks/ios-voice-recorder-expo-skills

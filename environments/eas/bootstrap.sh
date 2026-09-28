@@ -19,14 +19,14 @@ mkdir -p "$sandbox_root"
 # macOS exposes these through APFS because its root filesystem is read-only.
 manifest="$sandbox_root/synthetic.conf"
 : > "$manifest"
-for name in app logs tests solution installed-agent harbor; do
+for name in app logs tests solution installed-agent harbor skills; do
   mkdir -p "$sandbox_root/$name"
   printf '%s\tprivate/tmp/harbor/%s\n' "$name" "$name" >> "$manifest"
 done
 sudo -n mkdir -p /etc/synthetic.d
 sudo -n install -m 644 "$manifest" /etc/synthetic.d/harbor
 sudo -n /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t || true
-for name in app logs tests solution installed-agent harbor; do
+for name in app logs tests solution installed-agent harbor skills; do
   if [ "$(cd "/$name" 2>/dev/null && pwd -P)" != "$sandbox_root/$name" ]; then
     echo "macOS did not create the required Harbor path /$name." >&2
     exit 1

@@ -1,4 +1,4 @@
-"""Deferred Harbor environment prototype for one EAS Workflows macOS VM.
+"""Harbor environment for one EAS Workflows macOS VM.
 
 Harbor stays on the controller. The EAS CLI supplies authenticated SSH; commands
 and file contents travel over its stdin, never through workflow inputs or argv.
@@ -29,11 +29,20 @@ TERMINAL_STATUSES = {"SUCCESS", "FAILURE", "CANCELED"}
 
 
 class EASWorkflowEnvironment(BaseEnvironment):
-    def __init__(self, *args, project_id: str | None = None, **kwargs):
-        self.project_id = project_id or os.environ.get("EAS_PROJECT_ID", "")
+    def __init__(
+        self, *args, project_id: str | None = None, stage: str = "production", **kwargs
+    ):
+        if stage not in {"production", "staging"}:
+            raise ValueError("EAS stage must be production or staging")
+        self.stage = stage
+        suffix = "_STAGING" if stage == "staging" else ""
+        self._token_variable = "EXPO_TOKEN" + suffix
+        self._project_variable = "EAS_PROJECT_ID" + suffix
+        self.project_id = project_id or os.environ.get(self._project_variable, "")
         self.workflow_run_id: str | None = None
         self.workflow_job_id: str | None = None
         self._bundle: tempfile.TemporaryDirectory | None = None
+        self._identity_directory: tempfile.TemporaryDirectory | None = None
         super().__init__(*args, **kwargs)
 
     @staticmethod
@@ -42,10 +51,11 @@ class EASWorkflowEnvironment(BaseEnvironment):
 
     @classmethod
     def preflight(cls) -> None:
-        for name in ("EXPO_TOKEN", "EAS_PROJECT_ID"):
-            if not os.environ.get(name):
-                raise SystemExit(f"EAS Workflows requires {name}")
-        for command in ("eas", "ssh", "git"):
+        # Harbor calls this before construction, without environment kwargs.
+        # The selected stage and project are checked in start(), before upload.
+        if not any(os.environ.get(name) for name in ("EXPO_TOKEN", "EXPO_TOKEN_STAGING")):
+            raise SystemExit("EAS Workflows requires EXPO_TOKEN or EXPO_TOKEN_STAGING")
+        for command in ("eas", "ssh", "ssh-keygen", "git"):
             if not shutil.which(command):
                 raise SystemExit(f"EAS Workflows requires {command} on PATH")
 
@@ -61,9 +71,13 @@ class EASWorkflowEnvironment(BaseEnvironment):
             raise ValueError("EAS macOS uses the provider workflow image, not docker_image")
 
     def _prepare_bundle(self) -> Path:
+        if not self.project_id:
+            raise ValueError(
+                f"EAS {self.stage} requires project_id or {self._project_variable}"
+            )
         uuid.UUID(self.project_id)
         self._bundle = tempfile.TemporaryDirectory(prefix="harbor-eas-")
-        root = Path(self._bundle.name)
+        root = Path(self._bundle.name).resolve()
         environment = root / "environment"
         environment.mkdir()
         setup = self.environment_dir / "setup.sh"
@@ -109,6 +123,19 @@ class EASWorkflowEnvironment(BaseEnvironment):
                 message = message.replace(value, "[redacted]")
         return message[-2000:]
 
+    async def _prepare_identity(self) -> None:
+        # This is deliberately separate from the directory uploaded to EAS.
+        # The relay accepts this disposable SSH key alongside its session token;
+        # a hosted controller must not depend on someone's personal ~/.ssh keys.
+        self._identity_directory = tempfile.TemporaryDirectory(prefix="harbor-eas-ssh-")
+        await self._process(
+            [
+                "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "harbor",
+                "-f", str(Path(self._identity_directory.name) / "identity"),
+            ],
+            timeout=30,
+        )
+
     def _startup_failure(self, state: dict) -> str:
         errors = []
         for job in state.get("jobs", []):
@@ -129,6 +156,32 @@ class EASWorkflowEnvironment(BaseEnvironment):
             + (f" — {details}" if details else "")
         )
 
+    def _cli_environment(self) -> dict[str, str]:
+        token = os.environ.get(self._token_variable)
+        if not token:
+            raise ValueError(f"EAS {self.stage} requires {self._token_variable}")
+        # Do not inherit EXPO_STAGING/EXPO_LOCAL from the controller: a run's
+        # explicit stage is authoritative, including when both tokens exist.
+        result = {
+            key: os.environ[key]
+            for key in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL")
+            if key in os.environ
+        }
+        result.update(
+            EXPO_TOKEN=token,
+            CI="1",
+            EAS_NO_VCS="1",
+            EAS_DISABLE_AUTO_FINGERPRINT="1",
+        )
+        if self.stage == "staging":
+            result["EXPO_STAGING"] = "1"
+        if self._bundle:
+            # Node's cwd resolves macOS /var -> /private/var. EAS computes the
+            # uploaded project subdirectory relative to this path, so it must
+            # use the same canonical root rather than a controller-only path.
+            result["EAS_PROJECT_ROOT"] = str(Path(self._bundle.name).resolve())
+        return result
+
     async def _process(
         self,
         arguments: list[str],
@@ -139,18 +192,10 @@ class EASWorkflowEnvironment(BaseEnvironment):
     ) -> tuple[bytes, bytes, int]:
         # Authentication stays on the controller. Never inherit model/judge keys
         # into the EAS CLI; environment variables are applied by the remote RPC.
-        process_env = {
-            key: os.environ[key]
-            for key in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "EXPO_TOKEN")
-            if key in os.environ
-        }
-        process_env.update(CI="1", EAS_NO_VCS="1", EAS_DISABLE_AUTO_FINGERPRINT="1")
-        if self._bundle:
-            process_env["EAS_PROJECT_ROOT"] = self._bundle.name
         process = await asyncio.create_subprocess_exec(
             *arguments,
             cwd=self._bundle.name if self._bundle else None,
-            env=process_env,
+            env=self._cli_environment(),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -158,10 +203,14 @@ class EASWorkflowEnvironment(BaseEnvironment):
         )
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(data), timeout)
-        except BaseException:
+        except BaseException as error:
             if process.returncode is None:
                 os.killpg(process.pid, signal.SIGKILL)
                 await process.wait()
+            if isinstance(error, TimeoutError):
+                raise TimeoutError(
+                    f"{Path(arguments[0]).name} {arguments[1]} timed out after {timeout:g}s"
+                ) from error
             raise
         if check and process.returncode:
             detail = self._diagnostic(stderr.decode("utf-8", "replace").strip())
@@ -197,8 +246,15 @@ class EASWorkflowEnvironment(BaseEnvironment):
     async def _rpc(self, request: dict, *, timeout: float = 180) -> dict:
         if not self.workflow_job_id:
             raise RuntimeError("EAS sandbox has not started")
+        if not self._identity_directory:
+            raise RuntimeError("EAS sandbox SSH identity has not been prepared")
         stdout, _, _ = await self._process(
-            ["eas", "workflow:ssh", self.workflow_job_id, RPC_COMMAND],
+            [
+                "eas", "workflow:ssh", self.workflow_job_id,
+                "-i", str(Path(self._identity_directory.name) / "identity"),
+                "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=30", RPC_COMMAND,
+            ],
             timeout=timeout,
             data=json.dumps(request).encode(),
         )
@@ -210,8 +266,10 @@ class EASWorkflowEnvironment(BaseEnvironment):
     async def start(self, force_build: bool = False) -> None:
         if self.workflow_run_id:
             raise RuntimeError("EAS sandbox is already started")
+        self._cli_environment()
         try:
             self._prepare_bundle()
+            await self._prepare_identity()
             # Resolve the existing project's owner/slug into this temporary app
             # config. --id never creates a project; --no-icon avoids mutations.
             await self._link_project()
@@ -221,8 +279,9 @@ class EASWorkflowEnvironment(BaseEnvironment):
                 "workflow:run", ".eas/workflows/harbor.yml", "--ssh"
             )
             self.workflow_run_id = started["id"]
-            self.logger.info("EAS workflow: %s", self.workflow_run_id)
+            self.logger.info("EAS %s workflow: %s", self.stage, self.workflow_run_id)
             deadline = time.monotonic() + self.task_env_config.build_timeout_sec
+            last_error: str | None = None
             while time.monotonic() < deadline:
                 state = await self._cli("workflow:view", self.workflow_run_id)
                 if state.get("status") in TERMINAL_STATUSES:
@@ -247,11 +306,12 @@ class EASWorkflowEnvironment(BaseEnvironment):
                             )
                         ).get("ready"):
                             return
-                    except (RuntimeError, json.JSONDecodeError):
-                        pass
+                    except (RuntimeError, json.JSONDecodeError, TimeoutError) as error:
+                        last_error = self._diagnostic(str(error))
                 await asyncio.sleep(3)
             raise TimeoutError(
                 "EAS workflow did not become ready before build_timeout_sec"
+                + (f": {last_error}" if last_error else "")
             )
         except BaseException:
             await asyncio.shield(self.stop(delete=True))
@@ -280,6 +340,9 @@ class EASWorkflowEnvironment(BaseEnvironment):
             if self._bundle and not self.workflow_run_id:
                 self._bundle.cleanup()
                 self._bundle = None
+            if self._identity_directory and not self.workflow_run_id:
+                self._identity_directory.cleanup()
+                self._identity_directory = None
 
     async def exec(
         self,

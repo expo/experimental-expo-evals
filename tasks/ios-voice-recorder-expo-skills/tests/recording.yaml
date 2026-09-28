@@ -1,0 +1,35 @@
+appId: dev.expo.eval.voicerecorder
+onFlowComplete:
+  - takeScreenshot: /logs/verifier/final-screen
+---
+- launchApp:
+    clearState: true
+    permissions:
+      microphone: allow
+- assertVisible: Record
+- assertVisible: All recordings
+- tapOn: Start recording
+- extendedWaitUntil:
+    visible: "00:0[5-9]|00:[1-5][0-9]"
+    timeout: 20000
+- takeScreenshot: /logs/verifier/recording
+- tapOn: Stop recording
+- tapOn: Save recording
+- tapOn: All recordings
+- assertVisible: Play recording
+- takeScreenshot: /logs/verifier/saved-recording
+- tapOn: Play recording
+- assertVisible: Stop playback
+- tapOn: Stop playback
+- launchApp
+- tapOn: All recordings
+- assertVisible: Play recording
+- tapOn: Delete recording
+- tapOn:
+    text: Delete
+    optional: true
+- assertVisible: No recordings
+- launchApp
+- tapOn: All recordings
+- assertVisible: No recordings
+- takeScreenshot: /logs/verifier/empty-recordings

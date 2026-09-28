@@ -1,0 +1,21 @@
+schema_version = "1.4"
+
+[metadata]
+display_name = "iOS Voice Recorder · Basic"
+
+[[artifacts]]
+source = "/app"
+destination = "app"
+exclude = ["**/node_modules/**", "**/.git/**", "**/.env*", "**/.expo/**", "**/.npm/**", "**/ios/**", "**/android/**", "**/build/**", "**/DerivedData/**", "**/*.app/**", "**/*.log"]
+
+[agent]
+timeout_sec = 1800
+
+[verifier]
+timeout_sec = 600
+
+[verifier.env]
+TYPESAFE_API_KEY = "${TYPESAFE_API_KEY}"
+
+[environment]
+build_timeout_sec = 900

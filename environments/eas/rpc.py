@@ -16,7 +16,7 @@ import uuid
 MAX_BYTES = 128 * 1024 * 1024
 ALIASES = {
     "/" + name
-    for name in ("app", "logs", "tests", "solution", "installed-agent", "harbor")
+    for name in ("app", "logs", "tests", "solution", "installed-agent", "harbor", "skills")
 }
 
 

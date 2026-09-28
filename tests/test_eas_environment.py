@@ -11,7 +11,7 @@ import unittest
 import uuid
 from importlib.resources import files
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from harbor.models.task.config import EnvironmentConfig, NetworkMode, NetworkPolicy
 from harbor.models.trial.config import ResourceMode
@@ -24,6 +24,9 @@ RPC_SCRIPT = files("environments.eas").joinpath("rpc.py")
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        self.environment_patch = patch.dict(os.environ, {"EXPO_TOKEN": "production-token"})
+        self.environment_patch.start()
+        self.addCleanup(self.environment_patch.stop)
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
@@ -41,6 +44,57 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             project_id="4eddbf65-47d6-4fa4-b91d-eedda3b11893",
             **kwargs,
         )
+
+    def test_stage_selects_only_its_credential_and_endpoint(self):
+        with patch.dict(
+            os.environ,
+            {
+                "PATH": "/usr/bin",
+                "EXPO_TOKEN": "production-token",
+                "EXPO_TOKEN_STAGING": "staging-token",
+                "EXPO_STAGING": "inherited-stage",
+                "EXPO_LOCAL": "1",
+                "ANTHROPIC_API_KEY": "model-secret",
+                "TYPESAFE_API_KEY": "judge-secret",
+            },
+            clear=True,
+        ):
+            production = self.adapter()._cli_environment()
+            staging = self.adapter(stage="staging")._cli_environment()
+        self.assertEqual(production["EXPO_TOKEN"], "production-token")
+        self.assertNotIn("EXPO_STAGING", production)
+        self.assertEqual(staging["EXPO_TOKEN"], "staging-token")
+        self.assertEqual(staging["EXPO_STAGING"], "1")
+        for environment in (production, staging):
+            self.assertNotIn("EXPO_LOCAL", environment)
+            self.assertNotIn("EXPO_TOKEN_STAGING", environment)
+            self.assertNotIn("ANTHROPIC_API_KEY", environment)
+            self.assertNotIn("TYPESAFE_API_KEY", environment)
+
+    def test_staging_never_falls_back_to_production_credential(self):
+        with patch.dict(os.environ, {"EXPO_TOKEN": "production-token"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "requires EXPO_TOKEN_STAGING"):
+                self.adapter(stage="staging")._cli_environment()
+
+    def test_invalid_stage_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "production or staging"):
+            self.adapter(stage="unknown")
+
+    def test_preflight_allows_staging_credentials_and_explicit_project_id(self):
+        with (
+            patch.dict(os.environ, {"EXPO_TOKEN_STAGING": "staging-token"}, clear=True),
+            patch("shutil.which", return_value="/tool"),
+        ):
+            EASWorkflowEnvironment.preflight()
+
+    async def test_missing_selected_credential_fails_before_upload(self):
+        adapter = self.adapter(stage="staging")
+        adapter._cli = AsyncMock()
+        with patch.dict(os.environ, {"EXPO_TOKEN": "production-token"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "EXPO_TOKEN_STAGING"):
+                await adapter.start()
+        adapter._cli.assert_not_called()
+        self.assertIsNone(adapter._bundle)
 
     def test_rejects_unenforceable_network_and_resource_policies(self):
         with self.assertRaises(ValueError):
@@ -72,6 +126,9 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         (self.environment / "workflow.yml").write_text("UNTRUSTED_WORKFLOW=not-for-upload")
         adapter = self.adapter()
         root = adapter._prepare_bundle()
+        self.assertEqual(
+            Path(adapter._cli_environment()["EAS_PROJECT_ROOT"]), root.resolve()
+        )
         self.assertEqual(
             {p.name for p in (root / "environment").iterdir()},
             {"setup.sh"},
@@ -107,6 +164,39 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                 adapter._prepare_bundle()
         finally:
             await adapter.stop()
+
+    async def test_ssh_identity_stays_outside_upload_and_is_removed_on_stop(self):
+        adapter = self.adapter()
+        root = adapter._prepare_bundle()
+        self.addAsyncCleanup(adapter.stop)
+        await adapter._prepare_identity()
+        identity = Path(adapter._identity_directory.name) / "identity"
+        self.assertFalse(identity.is_relative_to(root))
+        self.assertEqual(identity.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(identity.parent.stat().st_mode & 0o777, 0o700)
+        self.assertTrue(identity.with_suffix(".pub").is_file())
+        for source in root.rglob("*"):
+            if source.is_file():
+                self.assertNotIn(b"BEGIN OPENSSH PRIVATE KEY", source.read_bytes())
+        # EAS forwards options after the destination; verify OpenSSH actually
+        # applies them there, without making a network connection.
+        stdout, _, _ = await adapter._process(
+            [
+                "ssh", "-G", "example.invalid", "-i", str(identity),
+                "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
+            ],
+            timeout=10,
+        )
+        self.assertIn(f"identityfile {identity}".encode(), stdout)
+        self.assertIn(b"identitiesonly yes", stdout)
+        self.assertIn(b"batchmode yes", stdout)
+        await adapter.stop()
+        self.assertFalse(identity.parent.exists())
+        self.assertFalse(root.exists())
+
+    async def test_process_timeout_identifies_the_command(self):
+        with self.assertRaisesRegex(TimeoutError, "sleep 1 timed out after"):
+            await self.adapter()._process(["sleep", "1"], timeout=0.01)
 
     async def test_start_waits_for_matching_job_and_readiness_then_confirms_stop(self):
         adapter = self.adapter()
@@ -189,6 +279,8 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_environment_overlays_and_secrets_only_go_through_stdin(self):
         adapter = self.adapter(persistent_env={"EXPO_TOKEN": "task-token"})
+        await adapter._prepare_identity()
+        self.addAsyncCleanup(adapter.stop)
         adapter.workflow_job_id = "job-id"
         adapter._process = AsyncMock(
             return_value=(b'{"stdout":"ok","stderr":"","return_code":7}', b"", 0)
@@ -197,6 +289,14 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             result = await adapter.exec("echo ok", env={"EXPO_TOKEN": "overridden"})
         call = adapter._process.call_args
         self.assertNotIn("private-secret", str(call.args))
+        self.assertNotIn("task-token", str(call.args))
+        arguments = call.args[0]
+        self.assertEqual(
+            arguments[arguments.index("-i") + 1],
+            str(Path(adapter._identity_directory.name) / "identity"),
+        )
+        self.assertIn("IdentitiesOnly=yes", arguments)
+        self.assertIn("BatchMode=yes", arguments)
         payload = json.loads(call.kwargs["data"])
         self.assertEqual(
             payload["env"],

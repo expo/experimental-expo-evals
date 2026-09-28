@@ -1,12 +1,17 @@
 # Expo evals
 
-Two native [Harbor tasks](https://docs.harborframework.com/core-concepts/tasks/overview):
-create an Expo SDK 57 coffee timer, run it on EAS Simulator, and download a screenshot.
-Both tasks have the same prompt and JEV rubric. One includes Expo skills.
-Claude Code runs in E2B; RewardKit grades the agent trace.
+Native [Harbor tasks](https://docs.harborframework.com/core-concepts/tasks/overview)
+for Expo SDK 57, paired with and without Expo skills:
+
+- EAS Simulator: create a coffee timer, run it on EAS Simulator, and download a screenshot.
+- iOS voice recorder: build a native app with Record and All recordings tabs,
+  then run it on a local iOS simulator inside an EAS Workflows macOS machine.
+
+Claude Code runs in the selected sandbox. RewardKit and JEV grade the evidence.
 
 ```text
 harbor.yaml                       # Task, agent, model, and sandbox selection
+harbor-ios.yaml                   # Voice-recorder tasks on EAS staging macOS
 pyproject.toml / uv.lock           # Python dependencies and adapter installation
 tasks/
   eas-simulator-basic/
@@ -19,9 +24,11 @@ tasks/
       test.sh                     # Calls RewardKit
       rubric.toml                 # JEV criteria
   eas-simulator-basic-expo-skills/ # Same structure, adds skills in setup
+  ios-voice-recorder/             # Local iOS app and simulator verification
+  ios-voice-recorder-expo-skills/  # Same app task, with Expo skills
 environments/
   e2b.py                          # Small E2B timeout override
-  eas/                            # Deferred macOS provider
+  eas/                            # EAS Workflows macOS provider
     environment.py                # Harbor lifecycle and SSH transport
     rpc.py                        # Remote command and file operations
     bootstrap.sh                  # Machine initialization
@@ -50,7 +57,7 @@ uv run harbor run --env-file .env -c harbor.yaml --dry-run
 uv run harbor run --env-file .env -c harbor.yaml
 ```
 
-The default runs both tasks sequentially, one attempt each, with Claude Opus 5.5.
+The default runs both EAS Simulator tasks sequentially, one attempt each, with Claude Opus 5.5.
 A real run consumes model, E2B, and EAS usage. E2B builds the Dockerfile remotely;
 local Docker is unnecessary. Harbor installs the agent.
 
@@ -118,15 +125,53 @@ and declares `environment.skills_dir = "/skills"` in `task.toml`.
 [Harbor registers these task skills](https://docs.harborframework.com/core-concepts/tasks/skills)
 with Claude Code or Codex. The baseline has no skills directory.
 
-Keep prompts and rubrics identical for this comparison. Each task is
+Keep prompts and rubrics identical for the EAS Simulator comparison. Each task is
 self-contained; there is no inheritance or task-generation layer. Skill versions
 are pinned in the setup script because build-installed skills do not receive
 Harbor's per-skill runtime lock entries.
 
-The dashboard discovers both tasks from Git. Select and run each task using the
+The dashboard discovers tasks from Git. Select and run each task using the
 same commit, harness, model, and attempt count, then compare their results in Runs.
 The dashboard uses `metadata.display_name` in `task.toml` for task labels;
 folder names remain the task IDs. Harbor accepts this as ordinary metadata.
+
+## Local iOS tasks on EAS Workflows
+
+The voice-recorder tasks require macOS, Xcode, and a local iOS simulator.
+`harbor-ios.yaml` selects the EAS provider and staging. The Harbor controller
+needs `eas`, `ssh`, and `git` on its PATH:
+
+```sh
+npm install --global eas-cli@24.8.0
+uv run harbor run --env-file .env -c harbor-ios.yaml --dry-run
+uv run harbor run --env-file .env -c harbor-ios.yaml
+```
+
+EAS execution is experimental. The staging smoke test reached a running macOS
+worker, but SSH hung while opening a session after successful authentication.
+Harbor cannot start the agent until that connection works. An end-to-end app
+run and the provider's command/file transport are not yet verified.
+
+Set `EXPO_TOKEN_STAGING` and `EAS_PROJECT_ID_STAGING` in `.env` for staging.
+Our staging project is `@expo/expo-evals-test`, ID
+`33f8931f-1782-485d-b2c3-1b11961d5b0a`.
+Production uses `EXPO_TOKEN` and `EAS_PROJECT_ID`; select it with
+`--ek stage=production`. Production SSH relay support must be enabled by EAS.
+The adapter never substitutes a production token for a missing staging token.
+Project selection can also use native `environment.kwargs.project_id`.
+
+Each trial starts an isolated macOS workflow, runs the task's `environment/setup.sh`,
+and connects Harbor over EAS SSH. The agent builds the app locally on that machine.
+The task setup installs a pinned Maestro CLI and boots an iPhone simulator.
+The verifier runs a fixed UI flow and supplies its output, app source, and agent
+trace to JEV. Screenshots are saved for human review; the pinned JEV adapter only
+accepts text. The flow checks recording controls and persistence, not audible
+microphone or speaker quality.
+
+The skills task adds a required `expo-overview` usage criterion and reports
+`expo-native-ui` and `expo-ui` usage as zero-weight diagnostic criteria.
+Its overall score includes the extra required criterion. Compare the shared
+app-quality criteria directly when comparing the two variants.
 
 ## Results
 
@@ -135,7 +180,7 @@ Running an eval makes no commit. Open Harbor's viewer with `uv run harbor view j
 The hosted runner and viewer live in
 [expo-evals-dashboard](https://github.com/davidmokos/expo-evals-dashboard).
 
-Both tasks use the same six criteria. Four are binary: SDK 57, coffee timer
+Both EAS Simulator tasks use the same six criteria. Four are binary: SDK 57, coffee timer
 implementation, EAS Simulator launch, and a downloaded screenshot. Two use JEV's
 native rubric scale from 0 to 4: ease of starting the simulator and reliability
 of the simulator workflow. Higher is better; the levels describe failed or
@@ -151,7 +196,7 @@ keeps each normalized value and JEV's raw result. Startup ease scores 0 without
 evidence that the app launched; reliability scores 0 unless both launch and
 screenshot download are evidenced.
 
-The rubric judges the recorded trace, not independent visual or interactive tests.
+The EAS Simulator rubric judges the recorded trace, not independent visual or interactive tests.
 `test.sh` uses RewardKit's formatter with a 16,000-token budget to fit JEV's input
 limits; grading criteria stay in `rubric.toml`.
 
@@ -164,9 +209,10 @@ sandbox's maximum lifetime; Harbor still stops it when the trial finishes. Task
 timeouts do not change the E2B creation request. Remove this override when Harbor
 supports the setting.
 
-The EAS provider is a deferred prototype. Python implements the provider and
-remote operations; Bash only prepares the macOS worker. EAS SSH relay availability
-and PTY compatibility still block an end-to-end run. It is not selected by default.
+Python implements the experimental EAS provider and remote operations; Bash only
+prepares the macOS worker. Production and staging use separate credentials and
+project IDs. SSH session readiness and command transport still need end-to-end
+verification. The default `harbor.yaml` continues to use E2B.
 
 `pyproject.toml` pins Harbor and RewardKit and installs the adapters, as required
 by Harbor's [custom sandbox import mechanism](https://docs.harborframework.com/core-concepts/sandboxes/custom-sandboxes).
