@@ -82,6 +82,24 @@ uv run harbor run --env-file .env -c harbor.yaml --n-attempts 3 --n-concurrent 1
 
 Replace `MODEL_ID` and set `OPENAI_API_KEY` for Codex. This does not change the judge.
 
+For Codex subscription usage, create a dedicated ChatGPT login:
+
+```sh
+CODEX_HOME="$HOME/.codex-evals" codex -c 'cli_auth_credentials_store="file"' login
+```
+
+Sign in with your Pro account, then set `CODEX_AUTH_JSON_PATH` in `.env` to the
+absolute path of `~/.codex-evals/auth.json`. Harbor imports this file natively
+and prefers it over `OPENAI_API_KEY`. Leave the path empty for API billing.
+Keep the file private and outside the repository. Pro usage limits still apply.
+
+Harbor 0.23 discards refreshed sandbox credentials, so this import requires
+manual renewal when authentication fails. Run the dedicated login again; do not
+share its session with another active Codex process. Hosted runs need the file's
+contents installed separately as the dashboard's `CODEX_AUTH_JSON` Worker secret.
+See the [dashboard deployment guide](https://github.com/davidmokos/expo-evals-dashboard/blob/main/DEPLOYMENT.md)
+and [OpenAI authentication docs](https://learn.chatgpt.com/docs/auth).
+
 ## Compare tasks
 
 `harbor.yaml` lists both task directories. Harbor expands its task list, agent
