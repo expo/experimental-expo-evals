@@ -125,6 +125,8 @@ Harbor's per-skill runtime lock entries.
 
 The dashboard discovers both tasks from Git. Select and run each task using the
 same commit, harness, model, and attempt count, then compare their results in Runs.
+The dashboard uses `metadata.display_name` in `task.toml` for task labels;
+folder names remain the task IDs. Harbor accepts this as ordinary metadata.
 
 ## Results
 

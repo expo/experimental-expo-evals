@@ -1,5 +1,8 @@
 schema_version = "1.4"
 
+[metadata]
+display_name = "EAS Simulator · Basic"
+
 [[artifacts]]
 source = "/app"
 destination = "app"
