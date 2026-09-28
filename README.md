@@ -85,6 +85,7 @@ Replace `MODEL_ID` and set `OPENAI_API_KEY` for Codex. This does not change the 
 For Codex subscription usage, create a dedicated ChatGPT login:
 
 ```sh
+mkdir -p -m 700 "$HOME/.codex-evals"
 CODEX_HOME="$HOME/.codex-evals" codex -c 'cli_auth_credentials_store="file"' login
 ```
 
