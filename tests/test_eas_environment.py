@@ -81,6 +81,20 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "production or staging"):
             self.adapter(stage="unknown")
 
+    def test_diagnostics_preserve_cause_and_strip_terminal_controls_before_redaction(self):
+        adapter = self.adapter()
+        adapter._persistent_env["TASK_TOKEN"] = "private-task-token"
+        message = adapter._diagnostic(
+            "EAS SSH connection was lost: " + "banner\n" * 500
+            + "\x1b]0;terminal title\x07\x1b[31mTimeout\x1b[0m "
+            + "production-\x1b[1mtoken\x1b[0m private-task-token\r\x08\x00"
+        )
+        self.assertTrue(message.startswith("EAS SSH connection was lost:"))
+        self.assertTrue(message.endswith("Timeout [redacted] [redacted]"))
+        self.assertLessEqual(len(message), 2000)
+        self.assertNotIn("terminal title", message)
+        self.assertNotRegex(message, r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
     def test_invalid_ssh_idle_timeout_is_rejected_before_upload(self):
         for timeout in (-1, 3601, True, "600"):
             with self.subTest(timeout=timeout):
@@ -588,6 +602,29 @@ rpc.framed(sys.argv[-1])
         self.assertNotIn("production-token", str(failure.exception))
         self.assertNotIn("never-sent", transcript.read_text())
         self.assertFalse(list(Path(adapter._identity_directory.name).glob("rpc-*")))
+
+    async def test_pty_failure_keeps_primary_error_and_stderr_despite_long_banners(self):
+        adapter, _, _ = await self.pty_adapter(
+            ssh_stderr="SSH banner\n" * 300 + "\x1b[31mSSH fatal production-token\x1b[0m\n"
+        )
+        adapter._master_diagnostics.extend(
+            b"tcgetattr: Inappropriate ioctl for device\n" * 60
+            + b"Timeout, server relay.example not responding.\n"
+        )
+        command = shlex.join([
+            sys.executable, "-c",
+            "print('The default interactive shell is now zsh.\\n' * 300)",
+        ]) + "; exit #"
+        with patch("environments.eas.environment.RPC_COMMAND", command):
+            with self.assertRaises(RuntimeError) as failure:
+                await adapter._rpc({"op": "ready"}, timeout=3)
+        message = str(failure.exception)
+        self.assertTrue(message.startswith("EAS SSH closed before the RPC response"))
+        self.assertIn("SSH fatal [redacted]", message)
+        self.assertIn("Timeout, server relay.example not responding.", message)
+        self.assertLessEqual(len(message), 2000)
+        self.assertNotIn("production-token", message)
+        self.assertNotIn("\x1b", message)
 
     async def test_pty_disconnect_kills_detached_command_and_keeps_adapter_usable(self):
         adapter, _, _ = await self.pty_adapter()

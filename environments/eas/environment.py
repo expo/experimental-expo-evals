@@ -11,6 +11,7 @@ import base64
 import io
 import json
 import os
+import re
 import shutil
 import signal
 import tarfile
@@ -130,17 +131,30 @@ class EASWorkflowEnvironment(BaseEnvironment):
         (root / ".gitignore").write_text(".env\n.env.*\n")
         return root
 
-    def _diagnostic(self, message: str) -> str:
+    def _diagnostic(self, message: str, *details: str) -> str:
         values = list(self._persistent_env.values())
         values += [
             value
             for name, value in os.environ.items()
             if any(word in name for word in ("TOKEN", "SECRET", "PASSWORD", "API_KEY"))
         ]
-        for value in values:
-            if len(value) >= 6:
-                message = message.replace(value, "[redacted]")
-        return message[-2000:]
+        def clean(text: str) -> str:
+            # Strip terminal formatting before redacting, including OSC titles.
+            text = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+            text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "", text)
+            for value in values:
+                if len(value) >= 6:
+                    text = text.replace(value, "[redacted]")
+            return text.strip()
+
+        summary = clean(message)
+        context = [value for detail in details if (value := clean(detail))]
+        if not context:
+            return summary if len(summary) <= 2000 else summary[:500] + "\n...\n" + summary[-1495:]
+        # Keep the cause first and reserve space for each stream's latest error.
+        summary = summary[:500]
+        budget = (2000 - len(summary) - len(context)) // len(context)
+        return "\n".join([summary, *(value[-budget:] for value in context)])
 
     async def _prepare_identity(self) -> None:
         # This is deliberately separate from the directory uploaded to EAS.
@@ -407,6 +421,7 @@ class EASWorkflowEnvironment(BaseEnvironment):
         )
         prefix = f"HARBOR_RPC {nonce} ".encode()
         diagnostics = bytearray()
+        preamble = bytearray()
 
         async def collect_stderr() -> None:
             while chunk := await process.stderr.read(8192):
@@ -416,8 +431,12 @@ class EASWorkflowEnvironment(BaseEnvironment):
         stderr_task = asyncio.create_task(collect_stderr())
 
         def diagnostic(error: object) -> str:
-            detail = (diagnostics + self._master_diagnostics).decode("utf-8", "replace").strip()
-            return self._diagnostic(f"{error}" + (f": {detail}" if detail else ""))
+            return self._diagnostic(
+                str(error),
+                preamble.decode("utf-8", "replace"),
+                diagnostics.decode("utf-8", "replace"),
+                self._master_diagnostics.decode("utf-8", "replace"),
+            )
 
         async def frame(expected: str) -> bytes:
             while True:
@@ -430,8 +449,8 @@ class EASWorkflowEnvironment(BaseEnvironment):
                     raise RuntimeError("EAS SSH closed before the RPC response")
                 header = line.rstrip(b"\r\n")
                 if not header.startswith(prefix):
-                    diagnostics.extend(line)
-                    del diagnostics[:-2000]
+                    preamble.extend(line)
+                    del preamble[:-2000]
                     continue
                 parts = header[len(prefix):].split()
                 if len(parts) != 2 or parts[0] != expected.encode():
