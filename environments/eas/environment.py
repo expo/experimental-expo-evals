@@ -28,13 +28,21 @@ RPC_COMMAND = "sudo -n /private/tmp/harbor-python /private/tmp/harbor-rpc.py"
 TERMINAL_STATUSES = {"SUCCESS", "FAILURE", "CANCELED"}
 
 
+class _SSHConnectionError(RuntimeError):
+    """The relay rejected a connection before any request was submitted."""
+
+
 class EASWorkflowEnvironment(BaseEnvironment):
     def __init__(
-        self, *args, project_id: str | None = None, stage: str = "production", **kwargs
+        self, *args, project_id: str | None = None, stage: str = "production",
+        ssh_idle_timeout_sec: int = 600, **kwargs
     ):
         if stage not in {"production", "staging"}:
             raise ValueError("EAS stage must be production or staging")
+        if type(ssh_idle_timeout_sec) is not int or not 0 <= ssh_idle_timeout_sec <= 3600:
+            raise ValueError("ssh_idle_timeout_sec must be an integer from 0 to 3600")
         self.stage = stage
+        self.ssh_idle_timeout_sec = ssh_idle_timeout_sec
         suffix = "_STAGING" if stage == "staging" else ""
         self._token_variable = "EXPO_TOKEN" + suffix
         self._project_variable = "EAS_PROJECT_ID" + suffix
@@ -244,24 +252,127 @@ class EASWorkflowEnvironment(BaseEnvironment):
         config_path.write_text(json.dumps(config))
 
     async def _rpc(self, request: dict, *, timeout: float = 180) -> dict:
+        deadline = time.monotonic() + timeout
+        attempt = 0
+        while True:
+            try:
+                return await self._rpc_once(request, timeout=max(0, deadline - time.monotonic()))
+            except _SSHConnectionError as error:
+                attempt += 1
+                if attempt == 3 or deadline - time.monotonic() <= attempt:
+                    raise
+                self.logger.warning("EAS SSH connection failed before request; retrying: %s", error)
+                await asyncio.sleep(attempt)
+
+    async def _rpc_once(self, request: dict, *, timeout: float) -> dict:
         if not self.workflow_job_id:
             raise RuntimeError("EAS sandbox has not started")
         if not self._identity_directory:
             raise RuntimeError("EAS sandbox SSH identity has not been prepared")
-        stdout, _, _ = await self._process(
-            [
-                "eas", "workflow:ssh", self.workflow_job_id,
-                "-i", str(Path(self._identity_directory.name) / "identity"),
-                "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
-                "-o", "ConnectTimeout=30", RPC_COMMAND,
-            ],
-            timeout=timeout,
-            data=json.dumps(request).encode(),
-        )
-        response = json.loads(stdout)
-        if response.get("error"):
-            raise RuntimeError(self._diagnostic(f"EAS sandbox: {response['error']}"))
-        return response
+        nonce = uuid.uuid4().hex
+        payload = json.dumps(request).encode()
+        if len(payload) > MAX_TRANSFER_BYTES * 2:
+            raise ValueError("RPC request exceeds frame limit")
+        # EAS stores its short-lived relay token in a temporary SSH config.
+        # Own that temp root so even a killed CLI cannot leave credentials behind.
+        with tempfile.TemporaryDirectory(
+            prefix="rpc-", dir=self._identity_directory.name
+        ) as temporary:
+            process = await asyncio.create_subprocess_exec(
+                *[
+                    "eas", "workflow:ssh", self.workflow_job_id, "-tt",
+                    "-i", str(Path(self._identity_directory.name) / "identity"),
+                    "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
+                    "-o", "ConnectTimeout=30",
+                ],
+                cwd=self._bundle.name if self._bundle else None,
+                env={**self._cli_environment(), "TMPDIR": temporary},
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+            prefix = f"HARBOR_RPC {nonce} ".encode()
+            diagnostics = bytearray()
+
+            async def collect_stderr() -> None:
+                while chunk := await process.stderr.read(8192):
+                    diagnostics.extend(chunk)
+                    del diagnostics[:-2000]
+
+            stderr_task = asyncio.create_task(collect_stderr())
+
+            def diagnostic(error: object) -> str:
+                detail = diagnostics.decode("utf-8", "replace").strip()
+                return self._diagnostic(f"{error}" + (f": {detail}" if detail else ""))
+
+            async def frame(expected: str) -> bytes:
+                while True:
+                    line = await process.stdout.readline()
+                    if not line:
+                        # SSH may close stdout before its final stderr arrives.
+                        # Keep this wait inside the RPC deadline; the collector
+                        # must survive timeout cancellation so cleanup can drain it.
+                        await asyncio.shield(stderr_task)
+                        raise RuntimeError("EAS SSH closed before the RPC response")
+                    header = line.rstrip(b"\r\n")
+                    if not header.startswith(prefix):
+                        diagnostics.extend(line)
+                        del diagnostics[:-2000]
+                        continue
+                    parts = header[len(prefix):].split()
+                    if len(parts) != 2 or parts[0] != expected.encode():
+                        raise RuntimeError(f"EAS RPC ended before {expected}")
+                    length = int(parts[1])
+                    if not 0 <= length <= MAX_TRANSFER_BYTES * 2:
+                        raise ValueError("RPC response exceeds frame limit")
+                    if expected != "RESULT" and length != 0:
+                        raise ValueError("Invalid RPC control frame")
+                    return await process.stdout.readexactly(length)
+
+            submitted = False
+            try:
+                async with asyncio.timeout(timeout):
+                    # Only this public bootstrap command goes through the shell.
+                    # EXIT makes a missing helper fail promptly during image setup.
+                    process.stdin.write(
+                        (
+                            f"{RPC_COMMAND} --framed {nonce}; "
+                            f"printf '\\nHARBOR_RPC {nonce} EXIT 0\\n'\n"
+                        ).encode()
+                    )
+                    await process.stdin.drain()
+                    await frame("READY")
+                    # Mark before write: even a partial write must never be replayed.
+                    submitted = True
+                    process.stdin.write(
+                        f"HARBOR_RPC {nonce} REQUEST {len(payload)}\n".encode() + payload
+                    )
+                    await process.stdin.drain()
+                    response = json.loads(await frame("RESULT"))
+                    await frame("DONE")
+            except TimeoutError as error:
+                raise TimeoutError(diagnostic(
+                    f"EAS SSH RPC timed out after {timeout:.3g}s"
+                )) from error
+            except (RuntimeError, ValueError, asyncio.IncompleteReadError) as error:
+                message = diagnostic(error)
+                if not submitted and "upstream unavailable" in message.lower():
+                    raise _SSHConnectionError(message) from error
+                raise RuntimeError(message) from error
+            finally:
+                # Each EAS guest has its own forced shell. Close only this client;
+                # never send `exit` or put request contents in shell history.
+                if process.returncode is None:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                await process.wait()
+                await stderr_task
+            if response.get("error"):
+                raise RuntimeError(self._diagnostic(f"EAS sandbox: {response['error']}"))
+            return response
 
     async def start(self, force_build: bool = False) -> None:
         if self.workflow_run_id:
@@ -276,7 +387,8 @@ class EASWorkflowEnvironment(BaseEnvironment):
             # Upload only this generated source bundle. Never submit the user's
             # repository or retry an ambiguous workflow creation response.
             started = await self._cli(
-                "workflow:run", ".eas/workflows/harbor.yml", "--ssh"
+                "workflow:run", ".eas/workflows/harbor.yml", "--ssh",
+                "--ssh-idle-timeout", str(self.ssh_idle_timeout_sec),
             )
             self.workflow_run_id = started["id"]
             self.logger.info("EAS %s workflow: %s", self.stage, self.workflow_run_id)
@@ -285,7 +397,10 @@ class EASWorkflowEnvironment(BaseEnvironment):
             while time.monotonic() < deadline:
                 state = await self._cli("workflow:view", self.workflow_run_id)
                 if state.get("status") in TERMINAL_STATUSES:
-                    raise RuntimeError(self._startup_failure(state))
+                    raise RuntimeError(
+                        self._startup_failure(state)
+                        + (f"; last SSH readiness failure: {last_error}" if last_error else "")
+                    )
                 job = next(
                     (
                         job
@@ -307,7 +422,10 @@ class EASWorkflowEnvironment(BaseEnvironment):
                         ).get("ready"):
                             return
                     except (RuntimeError, json.JSONDecodeError, TimeoutError) as error:
-                        last_error = self._diagnostic(str(error))
+                        diagnostic = self._diagnostic(str(error))
+                        if diagnostic != last_error:
+                            self.logger.warning("EAS SSH readiness: %s", diagnostic)
+                        last_error = diagnostic
                 await asyncio.sleep(3)
             raise TimeoutError(
                 "EAS workflow did not become ready before build_timeout_sec"

@@ -3,6 +3,7 @@ import base64
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tarfile
@@ -79,6 +80,12 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
     def test_invalid_stage_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "production or staging"):
             self.adapter(stage="unknown")
+
+    def test_invalid_ssh_idle_timeout_is_rejected_before_upload(self):
+        for timeout in (-1, 3601, True, "600"):
+            with self.subTest(timeout=timeout):
+                with self.assertRaisesRegex(ValueError, "ssh_idle_timeout_sec"):
+                    self.adapter(ssh_idle_timeout_sec=timeout)
 
     def test_preflight_allows_staging_credentials_and_explicit_project_id(self):
         with (
@@ -199,7 +206,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             await self.adapter()._process(["sleep", "1"], timeout=0.01)
 
     async def test_start_waits_for_matching_job_and_readiness_then_confirms_stop(self):
-        adapter = self.adapter()
+        adapter = self.adapter(ssh_idle_timeout_sec=900)
         adapter._cli = AsyncMock(
             side_effect=[
                 {
@@ -229,6 +236,10 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             ("init", "--id", adapter.project_id, "--force", "--no-icon"),
         )
         self.assertIn("--ssh", adapter._cli.call_args_list[1].args)
+        self.assertEqual(
+            adapter._cli.call_args_list[1].args[-2:],
+            ("--ssh-idle-timeout", "900"),
+        )
         await adapter.stop()
         self.assertIsNone(adapter.workflow_run_id)
         self.assertIsNone(adapter._bundle)
@@ -257,6 +268,47 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(adapter.workflow_run_id)
 
+    async def test_readiness_failure_is_logged_safely_and_retained_after_cancellation(self):
+        adapter = self.adapter(persistent_env={"EXPO_TOKEN": "private-task-token"})
+        running = {
+            "status": "IN_PROGRESS",
+            "jobs": [{"id": "job-id", "key": "sandbox", "status": "IN_PROGRESS"}],
+        }
+        adapter._cli = AsyncMock(
+            side_effect=[
+                {"owner": "example", "slug": "eval-project"},
+                {"id": "workflow-id"},
+                running,
+                running,
+                {"status": "CANCELED"},
+                {"status": "CANCELED"},
+            ]
+        )
+        adapter._rpc = AsyncMock(
+            side_effect=RuntimeError(
+                "channel 0: upstream unavailable production-token private-task-token"
+            )
+        )
+        adapter._process = AsyncMock(return_value=(b"", b"", 0))
+        with (
+            patch("environments.eas.environment.asyncio.sleep", new_callable=AsyncMock),
+            self.assertLogs(adapter.logger, level="WARNING") as captured,
+            self.assertRaises(RuntimeError) as failure,
+        ):
+            await adapter.start()
+        self.assertEqual(adapter._rpc.await_count, 2)
+        self.assertEqual(len(captured.output), 1)
+        self.assertIn("EAS SSH readiness", captured.output[0])
+        self.assertIn("CANCELED", str(failure.exception))
+        self.assertIn("last SSH readiness failure", str(failure.exception))
+        for diagnostic in (captured.output[0], str(failure.exception)):
+            self.assertIn("upstream unavailable", diagnostic)
+            self.assertIn("[redacted]", diagnostic)
+            self.assertNotIn("production-token", diagnostic)
+            self.assertNotIn("private-task-token", diagnostic)
+        self.assertIsNone(adapter.workflow_run_id)
+        self.assertIsNone(adapter._identity_directory)
+
     def test_startup_errors_explain_unavailable_ssh_without_credentials(self):
         adapter = self.adapter(persistent_env={"EXPO_TOKEN": "private-token"})
         message = adapter._startup_failure(
@@ -278,31 +330,235 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("private-token", message)
 
     async def test_environment_overlays_and_secrets_only_go_through_stdin(self):
-        adapter = self.adapter(persistent_env={"EXPO_TOKEN": "task-token"})
-        await adapter._prepare_identity()
-        self.addAsyncCleanup(adapter.stop)
-        adapter.workflow_job_id = "job-id"
-        adapter._process = AsyncMock(
-            return_value=(b'{"stdout":"ok","stderr":"","return_code":7}', b"", 0)
-        )
+        adapter, transcript, commands = await self.pty_adapter()
         with adapter.scoped_exec_env({"AGENT_SECRET": "private-secret"}):
-            result = await adapter.exec("echo ok", env={"EXPO_TOKEN": "overridden"})
-        call = adapter._process.call_args
-        self.assertNotIn("private-secret", str(call.args))
-        self.assertNotIn("task-token", str(call.args))
-        arguments = call.args[0]
+            result = await adapter.exec(
+                'test "$EXPO_TOKEN" = overridden && test "$AGENT_SECRET" = private-secret '
+                '&& printf ok; printf problem >&2; exit 7',
+                cwd=str(self.root), env={"EXPO_TOKEN": "overridden"},
+            )
+        self.assertNotIn("private-secret", str(commands))
+        self.assertNotIn("private-secret", transcript.read_text())
+        arguments = commands[0]
         self.assertEqual(
             arguments[arguments.index("-i") + 1],
             str(Path(adapter._identity_directory.name) / "identity"),
         )
         self.assertIn("IdentitiesOnly=yes", arguments)
         self.assertIn("BatchMode=yes", arguments)
-        payload = json.loads(call.kwargs["data"])
-        self.assertEqual(
-            payload["env"],
-            {"EXPO_TOKEN": "overridden", "AGENT_SECRET": "private-secret"},
-        )
+        self.assertIn("-tt", arguments)
+        self.assertEqual(result.stdout, "ok")
+        self.assertEqual(result.stderr, "problem")
         self.assertEqual(result.return_code, 7)
+        self.assertEqual(
+            {path.name for path in Path(adapter._identity_directory.name).iterdir()},
+            {"identity", "identity.pub"},
+        )
+
+    async def pty_adapter(
+        self, *, ssh_stderr="", connection_failures=0, connection_stderr_delay=0.05
+    ):
+        """An actual independent shell PTY, replacing only the remote SSH hop."""
+        adapter = self.adapter()
+        await adapter._prepare_identity()
+        self.addAsyncCleanup(adapter.stop)
+        adapter.workflow_job_id = "job-id"
+        transcript = self.root / "terminal.log"
+        bridge = self.root / "pty_bridge.py"
+        bridge.write_text('''import os, pty, select, sys
+sys.stderr.write(os.environ.get("SSH_STDERR", ""))
+sys.stderr.flush()
+pid, master = pty.fork()
+if pid == 0:
+    os.environ["PS1"] = "fixture> "
+    os.execv("/bin/bash", ["bash", "--noprofile", "--norc"])
+with open(os.environ["TRANSCRIPT"], "ab", buffering=0) as output:
+    while True:
+        for source in select.select([master, 0], [], [])[0]:
+            try:
+                data = os.read(source, 65536)
+            except OSError:
+                data = b""
+            if not data:
+                os.close(master)
+                sys.exit(0)
+            if source == master:
+                output.write(data)
+                os.write(1, data)
+            else:
+                os.write(master, data)
+''')
+        original = asyncio.create_subprocess_exec
+        commands = []
+
+        async def shell(*arguments, **kwargs):
+            commands.append(arguments)
+            # Model EAS CLI's token-bearing temporary SSH config, including
+            # when the subprocess is killed before its own finally can run.
+            config = Path(kwargs["env"]["TMPDIR"]) / "eas-workflow-ssh-fixture"
+            config.mkdir()
+            (config / "config").write_text("User disposable-relay-token")
+            kwargs["env"]["TRANSCRIPT"] = str(transcript)
+            kwargs["env"]["SSH_STDERR"] = ssh_stderr
+            if len(commands) <= connection_failures:
+                return await original(
+                    sys.executable, "-c",
+                    # Closing stdout first reproduces separate pipe delivery:
+                    # the retry reason must wait for stderr, not race its reader.
+                    f"import os, sys, time; os.close(1); time.sleep({connection_stderr_delay}); "
+                    "print('channel 0: open failed: upstream unavailable', file=sys.stderr); sys.exit(255)",
+                    **kwargs,
+                )
+            return await original(sys.executable, str(bridge), **kwargs)
+
+        self.enterContext(patch("asyncio.create_subprocess_exec", side_effect=shell))
+        self.enterContext(patch(
+            "environments.eas.environment.RPC_COMMAND",
+            shlex.join([sys.executable, str(RPC_SCRIPT)]),
+        ))
+        return adapter, transcript, commands
+
+    async def test_retries_relay_failure_even_when_stderr_arrives_after_stdout_closes(self):
+        adapter, _, commands = await self.pty_adapter(connection_failures=1)
+        marker = self.root / "executions"
+        with self.assertLogs(adapter.logger, level="WARNING"):
+            result = await adapter.exec(
+                f'printf x >> "{marker}"; printf completed', cwd=str(self.root), timeout_sec=5
+            )
+        self.assertEqual(result.stdout, "completed")
+        self.assertEqual(marker.read_text(), "x")
+        self.assertEqual(len(commands), 2)
+        self.assertFalse(list(Path(adapter._identity_directory.name).glob("rpc-*")))
+
+    async def test_relay_retries_are_bounded_and_share_one_timeout(self):
+        adapter, _, commands = await self.pty_adapter(connection_failures=10)
+        with self.assertRaisesRegex(RuntimeError, "upstream unavailable"):
+            await adapter._rpc({"op": "ready"}, timeout=0.5)
+        self.assertEqual(len(commands), 1)
+        with (
+            patch("environments.eas.environment.asyncio.sleep", new_callable=AsyncMock),
+            self.assertLogs(adapter.logger, level="WARNING"),
+            self.assertRaisesRegex(RuntimeError, "upstream unavailable"),
+        ):
+            await adapter._rpc({"op": "ready"}, timeout=10)
+        self.assertEqual(len(commands), 4)  # One short-budget call, then three attempts.
+        self.assertFalse(list(Path(adapter._identity_directory.name).glob("rpc-*")))
+
+    async def test_stdout_eof_does_not_wait_for_stderr_beyond_rpc_deadline(self):
+        adapter, _, commands = await self.pty_adapter(
+            connection_failures=1, connection_stderr_delay=2
+        )
+        with self.assertRaisesRegex(TimeoutError, "EAS SSH RPC timed out"):
+            await adapter._rpc({"op": "ready"}, timeout=0.3)
+        self.assertEqual(len(commands), 1)
+        self.assertFalse(list(Path(adapter._identity_directory.name).glob("rpc-*")))
+
+    async def test_does_not_retry_relay_failure_after_request_is_submitted(self):
+        adapter, _, commands = await self.pty_adapter()
+        marker = self.root / "executions"
+        helper = self.root / "failing_rpc.py"
+        helper.write_text(f"""import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location("rpc", {str(RPC_SCRIPT)!r})
+rpc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(rpc)
+def fail(request):
+    with pathlib.Path({str(marker)!r}).open("a") as output:
+        output.write("x")
+    print("channel 0: open failed: upstream unavailable", flush=True)
+    raise SystemExit(1)
+rpc.main = fail
+rpc.framed(sys.argv[-1])
+""")
+        with patch(
+            "environments.eas.environment.RPC_COMMAND",
+            shlex.join([sys.executable, str(helper)]),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "upstream unavailable"):
+                await adapter._rpc({"op": "exec"}, timeout=5)
+        self.assertEqual(marker.read_text(), "x")
+        self.assertEqual(len(commands), 1)
+
+    async def test_pty_transfers_large_binary_frames_without_echoing_requests(self):
+        adapter, transcript, _ = await self.pty_adapter()
+        data = bytes(range(256)) * 1024
+        target = self.root / "binary"
+        await adapter._rpc({
+            "op": "put", "path": str(target), "mode": 0o600,
+            "data": base64.b64encode(data).decode(),
+            "private_metadata": "must-not-appear-on-terminal",
+        }, timeout=15)
+        response = await adapter._rpc({"op": "get", "path": str(target)}, timeout=15)
+        self.assertEqual(base64.b64decode(response["data"]), data)
+        self.assertNotIn(b"must-not-appear-on-terminal", transcript.read_bytes())
+
+    async def test_missing_pty_helper_fails_without_sending_request(self):
+        adapter, transcript, _ = await self.pty_adapter()
+        with patch("environments.eas.environment.RPC_COMMAND", "/missing-harbor-helper"):
+            with self.assertRaisesRegex(RuntimeError, "before READY"):
+                await adapter._rpc({"op": "ready", "secret": "not-for-the-shell"}, timeout=3)
+        self.assertNotIn("not-for-the-shell", transcript.read_text())
+        self.assertFalse(list(Path(adapter._identity_directory.name).glob("rpc-*")))
+
+    async def test_pty_timeout_retains_sanitized_stdout_and_stderr_diagnostics(self):
+        adapter, transcript, _ = await self.pty_adapter(
+            ssh_stderr="SSH warning production-token\n"
+        )
+        with patch(
+            "environments.eas.environment.RPC_COMMAND",
+            "printf 'worker pending\\n'; sleep 30 #",
+        ):
+            with self.assertRaises(TimeoutError) as failure:
+                await adapter._rpc({"op": "ready", "secret": "never-sent"}, timeout=0.5)
+        self.assertIn("timed out after 0.5s", str(failure.exception))
+        self.assertIn("worker pending", str(failure.exception))
+        self.assertIn("SSH warning [redacted]", str(failure.exception))
+        self.assertNotIn("production-token", str(failure.exception))
+        self.assertNotIn("never-sent", transcript.read_text())
+        self.assertFalse(list(Path(adapter._identity_directory.name).glob("rpc-*")))
+
+    async def test_pty_disconnect_kills_detached_command_and_keeps_adapter_usable(self):
+        adapter, _, _ = await self.pty_adapter()
+        started = self.root / "started"
+        unexpected = self.root / "unexpected"
+        execution = asyncio.create_task(adapter.exec(
+            f'touch "{started}"; (sleep 1; touch "{unexpected}") & wait',
+            cwd=str(self.root), timeout_sec=30,
+        ))
+        for _ in range(100):
+            if started.exists():
+                break
+            await asyncio.sleep(0.02)
+        self.assertTrue(started.exists())
+        execution.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await execution
+        await asyncio.sleep(1.1)
+        self.assertFalse(unexpected.exists())
+        result = await adapter.exec("printf reused", cwd=str(self.root), timeout_sec=5)
+        self.assertEqual(result.stdout, "reused")
+        self.assertFalse(list(Path(adapter._identity_directory.name).glob("rpc-*")))
+
+    async def test_pty_disconnect_kills_descendants_after_shell_has_exited(self):
+        adapter, _, _ = await self.pty_adapter()
+        started = self.root / "started"
+        unexpected = self.root / "unexpected"
+        execution = asyncio.create_task(adapter.exec(
+            f'touch "{started}"; (sleep 1; touch "{unexpected}") & exit 0',
+            cwd=str(self.root), timeout_sec=30,
+        ))
+        for _ in range(100):
+            if started.exists():
+                break
+            await asyncio.sleep(0.02)
+        self.assertTrue(started.exists())
+        # The shell exits immediately; its background child holds stdout open,
+        # so communicate() is still pending when the SSH connection closes.
+        await asyncio.sleep(0.1)
+        execution.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await execution
+        await asyncio.sleep(1.1)
+        self.assertFalse(unexpected.exists())
 
     async def test_cancel_interrupts_remote_command_but_keeps_vm_for_verifier(self):
         adapter = self.adapter()

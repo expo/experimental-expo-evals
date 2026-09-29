@@ -147,11 +147,11 @@ uv run harbor run --env-file .env -c harbor-ios.yaml --dry-run
 uv run harbor run --env-file .env -c harbor-ios.yaml
 ```
 
-EAS execution is experimental. The hosted staging attempt completed task setup,
-including Maestro installation and iPhone simulator boot. SSH then failed with
-`channel 0: open failed: connect failed: upstream unavailable` before the agent
-started. An end-to-end app run and the provider's command/file transport remain
-unverified until the relay can connect to the worker.
+EAS execution is experimental. Staging SSH and remote command execution have
+worked, but its temporary public relay intermittently returns
+`channel 0: open failed: connect failed: upstream unavailable`, including while
+the job is still running. Task setup has installed Maestro and booted an iPhone
+simulator; an end-to-end app eval is not yet verified.
 
 Set `EXPO_TOKEN_STAGING` and `EAS_PROJECT_ID_STAGING` in `.env` for staging.
 Our staging project is `@expo/expo-evals-test`, ID
@@ -163,6 +163,13 @@ Project selection can also use native `environment.kwargs.project_id`.
 
 Each trial starts an isolated macOS workflow, runs the task's `environment/setup.sh`,
 and connects Harbor over EAS SSH. The agent builds the app locally on that machine.
+EAS SSH exposes an interactive terminal. The adapter sends framed requests only
+after its remote helper disables terminal echo. It retries `upstream unavailable`
+up to three connection attempts before submission; submitted operations are never
+replayed. It starts workflows with
+`--ssh --ssh-idle-timeout 600`; use `--ek ssh_idle_timeout_sec=900` to change the
+post-job SSH grace period (0–3600 seconds). This does not change task timeouts,
+and Harbor still cancels the workflow when the trial ends.
 The task setup installs a pinned Maestro CLI and boots an iPhone simulator.
 The verifier runs a fixed UI flow and supplies its output, app source, and agent
 trace to JEV. Screenshots are saved for human review; the pinned JEV adapter only
@@ -212,8 +219,8 @@ supports the setting.
 
 Python implements the experimental EAS provider and remote operations; Bash only
 prepares the macOS worker. Production and staging use separate credentials and
-project IDs. SSH session readiness and command transport still need end-to-end
-verification. The default `harbor.yaml` continues to use E2B.
+project IDs. Full eval execution on EAS still needs end-to-end verification.
+The default `harbor.yaml` continues to use E2B.
 
 `pyproject.toml` pins Harbor and RewardKit and installs the adapters, as required
 by Harbor's [custom sandbox import mechanism](https://docs.harborframework.com/core-concepts/sandboxes/custom-sandboxes).
