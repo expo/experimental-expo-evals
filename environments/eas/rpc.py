@@ -1,4 +1,4 @@
-"""One JSON request per SSH connection, executed only on the EAS worker."""
+"""One JSON request per SSH channel, executed only on the EAS worker."""
 
 import base64
 import io

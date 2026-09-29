@@ -147,11 +147,11 @@ uv run harbor run --env-file .env -c harbor-ios.yaml --dry-run
 uv run harbor run --env-file .env -c harbor-ios.yaml
 ```
 
-EAS execution is experimental. Staging SSH and remote command execution have
-worked, but its temporary public relay intermittently returns
-`channel 0: open failed: connect failed: upstream unavailable`, including while
-the job is still running. Task setup has installed Maestro and booted an iPhone
-simulator; an end-to-end app eval is not yet verified.
+EAS execution is experimental. Opening new SSH connections on staging has failed
+with `upstream unavailable` while an existing connection remained usable. The
+adapter now shares one connection; staging checks passed for commands, file and
+directory transfers, and cancellation. Task setup has installed Maestro and
+booted an iPhone simulator; an end-to-end app eval is not yet verified.
 
 Set `EXPO_TOKEN_STAGING` and `EAS_PROJECT_ID_STAGING` in `.env` for staging.
 Our staging project is `@expo/expo-evals-test`, ID
@@ -163,10 +163,12 @@ Project selection can also use native `environment.kwargs.project_id`.
 
 Each trial starts an isolated macOS workflow, runs the task's `environment/setup.sh`,
 and connects Harbor over EAS SSH. The agent builds the app locally on that machine.
-EAS SSH exposes an interactive terminal. The adapter sends framed requests only
-after its remote helper disables terminal echo. It retries `upstream unavailable`
-up to three connection attempts before submission; submitted operations are never
-replayed. It starts workflows with
+The adapter keeps one SSH connection per trial using OpenSSH ControlMaster.
+Commands and file transfers use separate terminal channels on that connection,
+so cancelling a command leaves the connection available. Requests are sent only
+after the remote helper disables terminal echo. Initial connection failures may
+be retried before sandbox readiness; a lost connection after readiness fails the
+trial without reconnecting or replaying commands. It starts workflows with
 `--ssh --ssh-idle-timeout 600`; use `--ek ssh_idle_timeout_sec=900` to change the
 post-job SSH grace period (0–3600 seconds). This does not change task timeouts,
 and Harbor still cancels the workflow when the trial ends.

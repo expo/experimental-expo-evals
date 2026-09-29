@@ -31,6 +31,10 @@ TERMINAL_STATUSES = {"SUCCESS", "FAILURE", "CANCELED"}
 class _SSHConnectionError(RuntimeError):
     """The relay rejected a connection before any request was submitted."""
 
+    def __init__(self, message: str, master=None):
+        super().__init__(message)
+        self.master = master
+
 
 class EASWorkflowEnvironment(BaseEnvironment):
     def __init__(
@@ -51,6 +55,13 @@ class EASWorkflowEnvironment(BaseEnvironment):
         self.workflow_job_id: str | None = None
         self._bundle: tempfile.TemporaryDirectory | None = None
         self._identity_directory: tempfile.TemporaryDirectory | None = None
+        self._master_directory: tempfile.TemporaryDirectory | None = None
+        self._master_process: asyncio.subprocess.Process | None = None
+        self._master_readers: list[asyncio.Task] = []
+        self._master_diagnostics = bytearray()
+        self._master_lock = asyncio.Lock()
+        self._ready = False
+        self._requests_submitted = False
         super().__init__(*args, **kwargs)
 
     @staticmethod
@@ -251,6 +262,112 @@ class EASWorkflowEnvironment(BaseEnvironment):
         config["expo"].update(owner=project["owner"], slug=project["slug"])
         config_path.write_text(json.dumps(config))
 
+    def _ssh_control_arguments(self) -> list[str]:
+        if not self._master_directory:
+            raise RuntimeError("EAS SSH master has not started")
+        return [
+            "ssh", "-F", "/dev/null", "-S", str(Path(self._master_directory.name) / "mux"),
+            "-o", "ControlMaster=no", "-o", "ProxyCommand=false", "-o", "BatchMode=yes",
+        ]
+
+    async def _ensure_master(self, *, timeout: float) -> None:
+        try:
+            async with asyncio.timeout(timeout):
+                async with self._master_lock:
+                    if self._master_process and self._master_process.returncode is None:
+                        return
+                    if self._ready or self._requests_submitted:
+                        raise RuntimeError(self._diagnostic(
+                            "EAS SSH connection was lost; submitted requests will not be replayed: "
+                            + self._master_diagnostics.decode("utf-8", "replace")
+                        ))
+                    await self._close_master()
+                    # A short absolute path stays below macOS's Unix socket limit.
+                    # EAS's token-bearing SSH config lives here until master exit.
+                    self._master_directory = tempfile.TemporaryDirectory(prefix="heas-", dir="/tmp")
+                    self._master_diagnostics.clear()
+                    try:
+                        self._master_process = await asyncio.create_subprocess_exec(
+                            "eas", "workflow:ssh", self.workflow_job_id,
+                            "-M", "-N", "-S", str(Path(self._master_directory.name) / "mux"),
+                            "-i", str(Path(self._identity_directory.name) / "identity"),
+                            "-o", "ControlPersist=no", "-o", "IdentitiesOnly=yes",
+                            "-o", "BatchMode=yes", "-o", "ConnectTimeout=30",
+                            "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2",
+                            cwd=self._bundle.name if self._bundle else None,
+                            env={**self._cli_environment(), "TMPDIR": self._master_directory.name},
+                            stdin=asyncio.subprocess.DEVNULL,
+                            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                            start_new_session=True,
+                        )
+
+                        async def collect(stream) -> None:
+                            while chunk := await stream.read(8192):
+                                self._master_diagnostics.extend(chunk)
+                                del self._master_diagnostics[:-2000]
+
+                        self._master_readers = [
+                            asyncio.create_task(collect(self._master_process.stdout)),
+                            asyncio.create_task(collect(self._master_process.stderr)),
+                        ]
+                        while True:
+                            if self._master_process.returncode is not None:
+                                await asyncio.gather(*self._master_readers)
+                                message = self._diagnostic(
+                                    "EAS SSH master exited before readiness: "
+                                    + self._master_diagnostics.decode("utf-8", "replace")
+                                )
+                                if "upstream unavailable" in message.lower():
+                                    raise _SSHConnectionError(message, self._master_process)
+                                raise RuntimeError(message)
+                            if (Path(self._master_directory.name) / "mux").exists():
+                                _, _, code = await self._process(
+                                    [*self._ssh_control_arguments(), "-O", "check", "harbor-eas.invalid"],
+                                    timeout=5, check=False,
+                                )
+                                if code == 0:
+                                    return
+                            await asyncio.sleep(0.05)
+                    except BaseException:
+                        await self._close_master()
+                        raise
+        except TimeoutError as error:
+            raise TimeoutError(self._diagnostic(
+                "EAS SSH master did not become ready before the connection timeout: "
+                + self._master_diagnostics.decode("utf-8", "replace")
+            )) from error
+
+    async def _close_master(self) -> None:
+        process = self._master_process
+        try:
+            if process and process.returncode is None:
+                try:
+                    _, _, code = await self._process(
+                        [*self._ssh_control_arguments(), "-O", "exit", "harbor-eas.invalid"],
+                        timeout=5, check=False,
+                    )
+                    if code == 0:
+                        await asyncio.wait_for(process.wait(), 5)
+                except (TimeoutError, OSError, RuntimeError):
+                    pass
+        finally:
+            # Cancellation during startup/shutdown must not orphan the master.
+            try:
+                if process and process.returncode is None:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    await process.wait()
+                if self._master_readers:
+                    await asyncio.gather(*self._master_readers, return_exceptions=True)
+            finally:
+                self._master_process = None
+                self._master_readers = []
+                if self._master_directory:
+                    self._master_directory.cleanup()
+                    self._master_directory = None
+
     async def _rpc(self, request: dict, *, timeout: float = 180) -> dict:
         deadline = time.monotonic() + timeout
         attempt = 0
@@ -259,9 +376,14 @@ class EASWorkflowEnvironment(BaseEnvironment):
                 return await self._rpc_once(request, timeout=max(0, deadline - time.monotonic()))
             except _SSHConnectionError as error:
                 attempt += 1
-                if attempt == 3 or deadline - time.monotonic() <= attempt:
+                async with self._master_lock:
+                    if self._ready or self._requests_submitted or attempt == 3:
+                        raise
+                    if self._master_process is error.master:
+                        await self._close_master()
+                if deadline - time.monotonic() <= attempt:
                     raise
-                self.logger.warning("EAS SSH connection failed before request; retrying: %s", error)
+                self.logger.warning("EAS SSH connection failed before readiness; retrying: %s", error)
                 await asyncio.sleep(attempt)
 
     async def _rpc_once(self, request: dict, *, timeout: float) -> dict:
@@ -273,110 +395,107 @@ class EASWorkflowEnvironment(BaseEnvironment):
         payload = json.dumps(request).encode()
         if len(payload) > MAX_TRANSFER_BYTES * 2:
             raise ValueError("RPC request exceeds frame limit")
-        # EAS stores its short-lived relay token in a temporary SSH config.
-        # Own that temp root so even a killed CLI cannot leave credentials behind.
-        with tempfile.TemporaryDirectory(
-            prefix="rpc-", dir=self._identity_directory.name
-        ) as temporary:
-            process = await asyncio.create_subprocess_exec(
-                *[
-                    "eas", "workflow:ssh", self.workflow_job_id, "-tt",
-                    "-i", str(Path(self._identity_directory.name) / "identity"),
-                    "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
-                    "-o", "ConnectTimeout=30",
-                ],
-                cwd=self._bundle.name if self._bundle else None,
-                env={**self._cli_environment(), "TMPDIR": temporary},
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,
-            )
-            prefix = f"HARBOR_RPC {nonce} ".encode()
-            diagnostics = bytearray()
+        deadline = time.monotonic() + timeout
+        await self._ensure_master(timeout=timeout)
+        master = self._master_process
+        process = await asyncio.create_subprocess_exec(
+            *self._ssh_control_arguments(), "-tt", "harbor-eas.invalid",
+            cwd=self._bundle.name if self._bundle else None,
+            env=self._cli_environment(),
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE, start_new_session=True,
+        )
+        prefix = f"HARBOR_RPC {nonce} ".encode()
+        diagnostics = bytearray()
 
-            async def collect_stderr() -> None:
-                while chunk := await process.stderr.read(8192):
-                    diagnostics.extend(chunk)
+        async def collect_stderr() -> None:
+            while chunk := await process.stderr.read(8192):
+                diagnostics.extend(chunk)
+                del diagnostics[:-2000]
+
+        stderr_task = asyncio.create_task(collect_stderr())
+
+        def diagnostic(error: object) -> str:
+            detail = (diagnostics + self._master_diagnostics).decode("utf-8", "replace").strip()
+            return self._diagnostic(f"{error}" + (f": {detail}" if detail else ""))
+
+        async def frame(expected: str) -> bytes:
+            while True:
+                line = await process.stdout.readline()
+                if not line:
+                    # SSH may close stdout before its final stderr arrives.
+                    # Keep this wait inside the RPC deadline; the collector
+                    # must survive timeout cancellation so cleanup can drain it.
+                    await asyncio.shield(stderr_task)
+                    raise RuntimeError("EAS SSH closed before the RPC response")
+                header = line.rstrip(b"\r\n")
+                if not header.startswith(prefix):
+                    diagnostics.extend(line)
                     del diagnostics[:-2000]
+                    continue
+                parts = header[len(prefix):].split()
+                if len(parts) != 2 or parts[0] != expected.encode():
+                    raise RuntimeError(f"EAS RPC ended before {expected}")
+                length = int(parts[1])
+                if not 0 <= length <= MAX_TRANSFER_BYTES * 2:
+                    raise ValueError("RPC response exceeds frame limit")
+                if expected != "RESULT" and length != 0:
+                    raise ValueError("Invalid RPC control frame")
+                return await process.stdout.readexactly(length)
 
-            stderr_task = asyncio.create_task(collect_stderr())
-
-            def diagnostic(error: object) -> str:
-                detail = diagnostics.decode("utf-8", "replace").strip()
-                return self._diagnostic(f"{error}" + (f": {detail}" if detail else ""))
-
-            async def frame(expected: str) -> bytes:
-                while True:
-                    line = await process.stdout.readline()
-                    if not line:
-                        # SSH may close stdout before its final stderr arrives.
-                        # Keep this wait inside the RPC deadline; the collector
-                        # must survive timeout cancellation so cleanup can drain it.
-                        await asyncio.shield(stderr_task)
-                        raise RuntimeError("EAS SSH closed before the RPC response")
-                    header = line.rstrip(b"\r\n")
-                    if not header.startswith(prefix):
-                        diagnostics.extend(line)
-                        del diagnostics[:-2000]
-                        continue
-                    parts = header[len(prefix):].split()
-                    if len(parts) != 2 or parts[0] != expected.encode():
-                        raise RuntimeError(f"EAS RPC ended before {expected}")
-                    length = int(parts[1])
-                    if not 0 <= length <= MAX_TRANSFER_BYTES * 2:
-                        raise ValueError("RPC response exceeds frame limit")
-                    if expected != "RESULT" and length != 0:
-                        raise ValueError("Invalid RPC control frame")
-                    return await process.stdout.readexactly(length)
-
-            submitted = False
-            try:
-                async with asyncio.timeout(timeout):
-                    # Only this public bootstrap command goes through the shell.
-                    # EXIT makes a missing helper fail promptly during image setup.
-                    process.stdin.write(
-                        (
-                            f"{RPC_COMMAND} --framed {nonce}; "
-                            f"printf '\\nHARBOR_RPC {nonce} EXIT 0\\n'\n"
-                        ).encode()
-                    )
-                    await process.stdin.drain()
-                    await frame("READY")
-                    # Mark before write: even a partial write must never be replayed.
-                    submitted = True
-                    process.stdin.write(
-                        f"HARBOR_RPC {nonce} REQUEST {len(payload)}\n".encode() + payload
-                    )
-                    await process.stdin.drain()
-                    response = json.loads(await frame("RESULT"))
-                    await frame("DONE")
-            except TimeoutError as error:
-                raise TimeoutError(diagnostic(
-                    f"EAS SSH RPC timed out after {timeout:.3g}s"
-                )) from error
-            except (RuntimeError, ValueError, asyncio.IncompleteReadError) as error:
-                message = diagnostic(error)
-                if not submitted and "upstream unavailable" in message.lower():
-                    raise _SSHConnectionError(message) from error
-                raise RuntimeError(message) from error
-            finally:
-                # Each EAS guest has its own forced shell. Close only this client;
-                # never send `exit` or put request contents in shell history.
-                if process.returncode is None:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                await process.wait()
-                await stderr_task
-            if response.get("error"):
-                raise RuntimeError(self._diagnostic(f"EAS sandbox: {response['error']}"))
-            return response
+        submitted = False
+        try:
+            async with asyncio.timeout(max(0, deadline - time.monotonic())):
+                # Only this public bootstrap command goes through the shell.
+                # EXIT makes a missing helper fail promptly during image setup.
+                process.stdin.write(
+                    (
+                        f"{RPC_COMMAND} --framed {nonce}; "
+                        f"printf '\\nHARBOR_RPC {nonce} EXIT 0\\n'\n"
+                    ).encode()
+                )
+                await process.stdin.drain()
+                await frame("READY")
+                # Mark before write: even a partial write must never be replayed.
+                submitted = True
+                if request.get("op") != "ready":
+                    self._requests_submitted = True
+                process.stdin.write(
+                    f"HARBOR_RPC {nonce} REQUEST {len(payload)}\n".encode() + payload
+                )
+                await process.stdin.drain()
+                response = json.loads(await frame("RESULT"))
+                await frame("DONE")
+        except TimeoutError as error:
+            raise TimeoutError(diagnostic(
+                f"EAS SSH RPC timed out after {timeout:.3g}s"
+            )) from error
+        except (RuntimeError, ValueError, asyncio.IncompleteReadError) as error:
+            message = diagnostic(error)
+            if not submitted and "upstream unavailable" in message.lower():
+                raise _SSHConnectionError(message, master) from error
+            raise RuntimeError(message) from error
+        finally:
+            # This local mux client owns only its session channel. Closing it
+            # leaves the shared SSH transport and other commands alive.
+            if process.returncode is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            await process.wait()
+            await stderr_task
+        if response.get("error"):
+            raise RuntimeError(self._diagnostic(f"EAS sandbox: {response['error']}"))
+        if request.get("op") == "ready" and response.get("ready"):
+            self._ready = True
+        return response
 
     async def start(self, force_build: bool = False) -> None:
         if self.workflow_run_id:
             raise RuntimeError("EAS sandbox is already started")
+        self._ready = False
+        self._requests_submitted = False
         self._cli_environment()
         try:
             self._prepare_bundle()
@@ -437,23 +556,26 @@ class EASWorkflowEnvironment(BaseEnvironment):
 
     async def stop(self, delete: bool = True) -> None:
         try:
-            if self.workflow_run_id:
-                run_id = self.workflow_run_id
-                await self._process(
-                    ["eas", "workflow:cancel", run_id, "--non-interactive"], timeout=60
-                )
-                # eas workflow:cancel can exit zero after a server-side error.
-                for _ in range(10):
-                    state = await self._cli("workflow:view", run_id, timeout=30)
-                    if state.get("status") in TERMINAL_STATUSES:
-                        self.workflow_run_id = None
-                        self.workflow_job_id = None
-                        break
-                    await asyncio.sleep(2)
-                else:
-                    raise RuntimeError(
-                        f"EAS workflow cancellation was not confirmed: {run_id}"
+            try:
+                await self._close_master()
+            finally:
+                if self.workflow_run_id:
+                    run_id = self.workflow_run_id
+                    await self._process(
+                        ["eas", "workflow:cancel", run_id, "--non-interactive"], timeout=60
                     )
+                    # eas workflow:cancel can exit zero after a server-side error.
+                    for _ in range(10):
+                        state = await self._cli("workflow:view", run_id, timeout=30)
+                        if state.get("status") in TERMINAL_STATUSES:
+                            self.workflow_run_id = None
+                            self.workflow_job_id = None
+                            break
+                        await asyncio.sleep(2)
+                    else:
+                        raise RuntimeError(
+                            f"EAS workflow cancellation was not confirmed: {run_id}"
+                        )
         finally:
             if self._bundle and not self.workflow_run_id:
                 self._bundle.cleanup()

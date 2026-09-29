@@ -18,7 +18,7 @@ from harbor.models.task.config import EnvironmentConfig, NetworkMode, NetworkPol
 from harbor.models.trial.config import ResourceMode
 from harbor.models.trial.paths import TrialPaths
 
-from environments.eas.environment import EASWorkflowEnvironment
+from environments.eas.environment import EASWorkflowEnvironment, _SSHConnectionError
 
 RPC_SCRIPT = files("environments.eas").joinpath("rpc.py")
 
@@ -201,6 +201,70 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(identity.parent.exists())
         self.assertFalse(root.exists())
 
+    async def test_master_startup_timeout_removes_process_and_private_config(self):
+        adapter = self.adapter()
+        self.addAsyncCleanup(adapter.stop)
+        await adapter._prepare_identity()
+        adapter.workflow_job_id = "job-id"
+        original = asyncio.create_subprocess_exec
+        masters = []
+        directories = []
+
+        async def launch(*arguments, **kwargs):
+            if arguments[0] != "eas":
+                return await original(*arguments, **kwargs)
+            directories.append(Path(kwargs["env"]["TMPDIR"]))
+            process = await original(
+                sys.executable, "-c",
+                "import os, pathlib, time; "
+                "pathlib.Path(os.environ['TMPDIR'], 'config').write_text('private-relay-token'); "
+                "time.sleep(30)",
+                **kwargs,
+            )
+            masters.append(process)
+            return process
+
+        with patch("asyncio.create_subprocess_exec", side_effect=launch):
+            with self.assertRaisesRegex(TimeoutError, "EAS SSH master did not become ready"):
+                await adapter._ensure_master(timeout=0.2)
+        self.assertEqual(len(masters), 1)
+        self.assertIsNotNone(masters[0].returncode)
+        self.assertIsNone(adapter._master_process)
+        self.assertIsNone(adapter._master_directory)
+        self.assertTrue(all(not path.exists() for path in directories))
+
+    async def test_failed_starting_connection_does_not_close_a_newer_master(self):
+        adapter = self.adapter()
+        failed_master, newer_master = object(), object()
+        adapter._master_process = newer_master
+        adapter._rpc_once = AsyncMock(side_effect=[
+            _SSHConnectionError("upstream unavailable", failed_master), {"ready": True}
+        ])
+        adapter._close_master = AsyncMock()
+        with (
+            patch("environments.eas.environment.asyncio.sleep", new_callable=AsyncMock),
+            self.assertLogs(adapter.logger, level="WARNING"),
+        ):
+            self.assertEqual(await adapter._rpc({"op": "ready"}), {"ready": True})
+        adapter._close_master.assert_not_called()
+        self.assertIs(adapter._master_process, newer_master)
+
+    async def test_local_ssh_cleanup_failure_still_cancels_and_confirms_workflow(self):
+        adapter = self.adapter()
+        bundle = adapter._prepare_bundle()
+        await adapter._prepare_identity()
+        identity = Path(adapter._identity_directory.name)
+        adapter.workflow_run_id = "workflow-id"
+        adapter._close_master = AsyncMock(side_effect=OSError("local cleanup failed"))
+        adapter._process = AsyncMock(return_value=(b"", b"", 0))
+        adapter._cli = AsyncMock(return_value={"status": "CANCELED"})
+        with self.assertRaisesRegex(OSError, "local cleanup failed"):
+            await adapter.stop()
+        self.assertEqual(adapter._process.call_args.args[0][1:3], ["workflow:cancel", "workflow-id"])
+        self.assertIsNone(adapter.workflow_run_id)
+        self.assertFalse(bundle.exists())
+        self.assertFalse(identity.exists())
+
     async def test_process_timeout_identifies_the_command(self):
         with self.assertRaisesRegex(TimeoutError, "sleep 1 timed out after"):
             await self.adapter()._process(["sleep", "1"], timeout=0.01)
@@ -340,12 +404,16 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("private-secret", str(commands))
         self.assertNotIn("private-secret", transcript.read_text())
         arguments = commands[0]
+        self.assertEqual(arguments[0], "ssh")
+        self.assertEqual(arguments[arguments.index("-F") + 1], "/dev/null")
         self.assertEqual(
-            arguments[arguments.index("-i") + 1],
-            str(Path(adapter._identity_directory.name) / "identity"),
+            arguments[arguments.index("-S") + 1],
+            str(Path(adapter._master_directory.name) / "mux"),
         )
-        self.assertIn("IdentitiesOnly=yes", arguments)
+        self.assertIn("ControlMaster=no", arguments)
+        self.assertIn("ProxyCommand=false", arguments)
         self.assertIn("BatchMode=yes", arguments)
+        self.assertNotIn("-i", arguments)
         self.assertIn("-tt", arguments)
         self.assertEqual(result.stdout, "ok")
         self.assertEqual(result.stderr, "problem")
@@ -363,6 +431,16 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await adapter._prepare_identity()
         self.addAsyncCleanup(adapter.stop)
         adapter.workflow_job_id = "job-id"
+
+        async def ensure_master(*, timeout):
+            # These tests exercise real PTY framing. The integration suite uses
+            # a real sshd to verify the master and multiplexed session lifecycle.
+            if not adapter._master_directory:
+                adapter._master_directory = tempfile.TemporaryDirectory(prefix="heas-test-", dir="/tmp")
+                config = Path(adapter._master_directory.name) / "config"
+                config.write_text("User disposable-relay-token")
+
+        adapter._ensure_master = ensure_master
         transcript = self.root / "terminal.log"
         bridge = self.root / "pty_bridge.py"
         bridge.write_text('''import os, pty, select, sys
@@ -393,11 +471,6 @@ with open(os.environ["TRANSCRIPT"], "ab", buffering=0) as output:
 
         async def shell(*arguments, **kwargs):
             commands.append(arguments)
-            # Model EAS CLI's token-bearing temporary SSH config, including
-            # when the subprocess is killed before its own finally can run.
-            config = Path(kwargs["env"]["TMPDIR"]) / "eas-workflow-ssh-fixture"
-            config.mkdir()
-            (config / "config").write_text("User disposable-relay-token")
             kwargs["env"]["TRANSCRIPT"] = str(transcript)
             kwargs["env"]["SSH_STDERR"] = ssh_stderr
             if len(commands) <= connection_failures:
