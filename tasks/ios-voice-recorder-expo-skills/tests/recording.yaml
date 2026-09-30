@@ -1,6 +1,6 @@
 appId: dev.expo.eval.voicerecorder
 onFlowComplete:
-  - takeScreenshot: /logs/verifier/final-screen
+  - takeScreenshot: final-screen
 ---
 - launchApp:
     clearState: true
@@ -12,12 +12,12 @@ onFlowComplete:
 - extendedWaitUntil:
     visible: "00:0[5-9]|00:[1-5][0-9]"
     timeout: 20000
-- takeScreenshot: /logs/verifier/recording
+- takeScreenshot: recording
 - tapOn: Stop recording
 - tapOn: Save recording
 - tapOn: All recordings
 - assertVisible: Play recording
-- takeScreenshot: /logs/verifier/saved-recording
+- takeScreenshot: saved-recording
 - tapOn: Play recording
 - assertVisible: Stop playback
 - tapOn: Stop playback
@@ -32,4 +32,4 @@ onFlowComplete:
 - launchApp
 - tapOn: All recordings
 - assertVisible: No recordings
-- takeScreenshot: /logs/verifier/empty-recordings
+- takeScreenshot: empty-recordings

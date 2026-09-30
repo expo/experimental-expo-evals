@@ -91,7 +91,7 @@ def main():
         "maestro": command(
             ["maestro", "--device", simulator, "test", "--format", "JUNIT",
              "--output", str(logs / "maestro.xml"), "--debug-output", str(logs / "maestro"),
-             "/tests/recording.yaml"], logs / "maestro.log", 240,
+             "--test-output-dir", str(logs / "maestro"), "/tests/recording.yaml"], logs / "maestro.log", 240,
         ),
     }
     installed = command(
