@@ -10,5 +10,4 @@ agents:
   - name: claude-code
     model_name: anthropic/claude-opus-5-5
 tasks:
-  - path: tasks/ios-voice-recorder
-  - path: tasks/ios-voice-recorder-expo-skills
+  - path: tasks/ios-simulator-basic

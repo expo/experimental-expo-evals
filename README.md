@@ -1,9 +1,10 @@
 # Expo evals
 
 Native [Harbor tasks](https://docs.harborframework.com/core-concepts/tasks/overview)
-for Expo SDK 57, paired with and without Expo skills:
+for Expo SDK 57:
 
 - EAS Simulator: create a coffee timer, run it on EAS Simulator, and download a screenshot.
+- iOS Simulator: create a starter app, run it locally on an iOS simulator, and save a screenshot.
 - iOS voice recorder: build a native app with Record and All recordings tabs,
   then run it on a local iOS simulator inside an EAS Workflows macOS machine.
 
@@ -11,7 +12,7 @@ Claude Code runs in the selected sandbox. RewardKit and JEV grade the evidence.
 
 ```text
 harbor.yaml                       # Task, agent, model, and sandbox selection
-harbor-ios.yaml                   # Voice-recorder tasks on EAS production macOS
+harbor-ios.yaml                   # Starter-app task on EAS production macOS
 pyproject.toml / uv.lock           # Python dependencies and adapter installation
 tasks/
   eas-simulator-basic/
@@ -24,6 +25,7 @@ tasks/
       test.sh                     # Calls RewardKit
       rubric.toml                 # JEV criteria
   eas-simulator-basic-expo-skills/ # Same structure, adds skills in setup
+  ios-simulator-basic/            # Starter app, local simulator, and screenshot
   ios-voice-recorder/             # Local iOS app and simulator verification
   ios-voice-recorder-expo-skills/  # Same app task, with Expo skills
 environments/
@@ -139,8 +141,8 @@ folder names remain the task IDs. Harbor accepts this as ordinary metadata.
 
 ## Local iOS tasks on EAS Workflows
 
-The voice-recorder tasks require macOS, Xcode, and a local iOS simulator.
-In the hosted dashboard, select **EAS production** and run either task.
+The local iOS tasks require macOS, Xcode, and a local iOS simulator.
+In the hosted dashboard, select **EAS production** and run the chosen task.
 Harbor stays in the hosted runner; each trial starts a disposable EAS macOS job.
 The job runs the task's `environment/setup.sh`, then an outbound HTTPS worker.
 No SSH service, relay, inbound port, or persistent connection is required.
@@ -169,7 +171,15 @@ For a separately hosted Harbor controller, provide `HARBOR_EAS_CONTROLLER_URL`,
 per-run relay. The dashboard supplies these automatically. A local EAS run needs
 that relay too; EAS does not provide a built-in Harbor command API.
 
-The task setup installs a pinned Maestro CLI and boots an iPhone simulator.
+`harbor-ios.yaml` selects `ios-simulator-basic`: create an SDK 57 starter app,
+launch it locally with Expo Go or a development build, and save a screenshot.
+Its agent budget is 30 minutes. JEV grades creation, launch, and screenshot capture
+from the trace, with a verifier-owned file existence, size, and PNG-signature check.
+The screenshot is saved as a Harbor artifact for human inspection. No Maestro
+flow or source-quality assessment is included in this task.
+
+The voice-recorder tasks also come with and without Expo skills. Their setup
+installs a pinned Maestro CLI and boots an iPhone simulator.
 The verifier runs a fixed UI flow and supplies its output, app source, and agent
 trace to JEV. Screenshots are saved for human review; the pinned JEV adapter only
 accepts text. The flow checks recording controls and persistence, not audible
