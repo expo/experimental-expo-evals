@@ -11,7 +11,7 @@ Claude Code runs in the selected sandbox. RewardKit and JEV grade the evidence.
 
 ```text
 harbor.yaml                       # Task, agent, model, and sandbox selection
-harbor-ios.yaml                   # Voice-recorder tasks on EAS staging macOS
+harbor-ios.yaml                   # Voice-recorder tasks on EAS production macOS
 pyproject.toml / uv.lock           # Python dependencies and adapter installation
 tasks/
   eas-simulator-basic/
@@ -29,7 +29,9 @@ tasks/
 environments/
   e2b.py                          # Small E2B timeout override
   eas/                            # EAS Workflows macOS provider
-    environment.py                # Harbor lifecycle and SSH transport
+    environment.py                # Harbor lifecycle and provider operations
+    transport.py                  # Controller HTTP client
+    worker.py                     # Outbound HTTPS polling on the Mac
     rpc.py                        # Remote command and file operations
     bootstrap.sh                  # Machine initialization
     workflow.yml                  # EAS machine definition
@@ -138,40 +140,35 @@ folder names remain the task IDs. Harbor accepts this as ordinary metadata.
 ## Local iOS tasks on EAS Workflows
 
 The voice-recorder tasks require macOS, Xcode, and a local iOS simulator.
-`harbor-ios.yaml` selects the EAS provider and staging. The Harbor controller
-needs `eas`, `ssh`, and `git` on its PATH:
+In the hosted dashboard, select **EAS production** and run either task.
+Harbor stays in the hosted runner; each trial starts a disposable EAS macOS job.
+The job runs the task's `environment/setup.sh`, then an outbound HTTPS worker.
+No SSH service, relay, inbound port, or persistent connection is required.
 
-```sh
-npm install --global eas-cli@24.8.0
-uv run harbor run --env-file .env -c harbor-ios.yaml --dry-run
-uv run harbor run --env-file .env -c harbor-ios.yaml
-```
+The hosted runner supplies a private controller endpoint and a public worker
+endpoint. The adapter registers a random credential scoped to one trial and
+includes only that credential in its temporary EAS source bundle. Bootstrap moves
+it into a root-owned directory and removes the source copy before the agent starts.
+Model and judge credentials travel in scoped command requests, not workflow inputs.
 
-EAS execution is experimental. Opening new SSH connections on staging has failed
-with `upstream unavailable` while an existing connection remained usable. The
-adapter now shares one connection; staging checks passed for commands, file and
-directory transfers, and cancellation. Task setup has installed Maestro and
-booted an iPhone simulator; an end-to-end app eval is not yet verified.
+Requests have stable IDs. The worker persists a claim before execution and the
+result before uploading it. Network retries reuse the same request and result;
+an uncertain operation after a worker restart fails instead of executing again.
+Transfers use 4 MiB chunks with SHA-256 checks. Cancellation remains available
+while agent commands run. The worker has a 55-minute maximum lifetime; Harbor
+closes its session and cancels the workflow after the trial.
 
-Set `EXPO_TOKEN_STAGING` and `EAS_PROJECT_ID_STAGING` in `.env` for staging.
-Our staging project is `@expo/expo-evals-test`, ID
-`33f8931f-1782-485d-b2c3-1b11961d5b0a`.
-Production uses `EXPO_TOKEN` and `EAS_PROJECT_ID`; select it with
-`--ek stage=production`. Production SSH relay support must be enabled by EAS.
-The adapter never substitutes a production token for a missing staging token.
-Project selection can also use native `environment.kwargs.project_id`.
+Production uses `EXPO_TOKEN` and `EAS_PROJECT_ID`. Our production project is
+`@mokosdavid/evals`, ID `2e4b45b5-8ed5-48d0-b5fe-2fcdaab8ad9a`.
+Staging uses `EXPO_TOKEN_STAGING` and `EAS_PROJECT_ID_STAGING`; select
+`environment.kwargs.stage: staging`. Credentials never fall back between stages.
+`harbor-ios.yaml` defaults to production; `harbor.yaml` continues to use E2B.
 
-Each trial starts an isolated macOS workflow, runs the task's `environment/setup.sh`,
-and connects Harbor over EAS SSH. The agent builds the app locally on that machine.
-The adapter keeps one SSH connection per trial using OpenSSH ControlMaster.
-Commands and file transfers use separate terminal channels on that connection,
-so cancelling a command leaves the connection available. Requests are sent only
-after the remote helper disables terminal echo. Initial connection failures may
-be retried before sandbox readiness; a lost connection after readiness fails the
-trial without reconnecting or replaying commands. It starts workflows with
-`--ssh --ssh-idle-timeout 600`; use `--ek ssh_idle_timeout_sec=900` to change the
-post-job SSH grace period (0–3600 seconds). This does not change task timeouts,
-and Harbor still cancels the workflow when the trial ends.
+For a separately hosted Harbor controller, provide `HARBOR_EAS_CONTROLLER_URL`,
+`HARBOR_EAS_CONTROLLER_TOKEN`, and `HARBOR_EAS_PUBLIC_URL` from the dashboard's
+per-run relay. The dashboard supplies these automatically. A local EAS run needs
+that relay too; EAS does not provide a built-in Harbor command API.
+
 The task setup installs a pinned Maestro CLI and boots an iPhone simulator.
 The verifier runs a fixed UI flow and supplies its output, app source, and agent
 trace to JEV. Screenshots are saved for human review; the pinned JEV adapter only
@@ -221,7 +218,7 @@ supports the setting.
 
 Python implements the experimental EAS provider and remote operations; Bash only
 prepares the macOS worker. Production and staging use separate credentials and
-project IDs. Full eval execution on EAS still needs end-to-end verification.
+project IDs. The adapter tests cover the protocol; production run status is visible in the dashboard.
 The default `harbor.yaml` continues to use E2B.
 
 `pyproject.toml` pins Harbor and RewardKit and installs the adapters, as required

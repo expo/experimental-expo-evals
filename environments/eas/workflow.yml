@@ -1,4 +1,4 @@
-name: Harbor sandbox
+name: Harbor HTTPS sandbox
 defaults:
   tools:
     node: "24"
@@ -8,5 +8,5 @@ jobs:
     image: macos-tahoe-26.4-xcode-26.4
     steps:
       - uses: eas/checkout
-      - name: Prepare Harbor sandbox
+      - name: Run Harbor HTTPS worker
         run: bash bootstrap.sh

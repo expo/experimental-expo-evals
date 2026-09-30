@@ -5,7 +5,7 @@ retry:
 environment:
   import_path: environments.eas.environment:EASWorkflowEnvironment
   kwargs:
-    stage: staging
+    stage: production
 agents:
   - name: claude-code
     model_name: anthropic/claude-opus-5-5

@@ -1,4 +1,4 @@
-"""One JSON request per SSH channel, executed only on the EAS worker."""
+"""Execute one sandbox operation from JSON stdin on the EAS worker."""
 
 import base64
 import io
@@ -11,8 +11,6 @@ import signal
 import subprocess
 import sys
 import tarfile
-import termios
-import tty
 import uuid
 
 MAX_BYTES = 128 * 1024 * 1024
@@ -224,49 +222,23 @@ def response(request):
 
 
 def interrupted(signum, _frame):
-    # A disconnected forced PTY must not orphan detached command processes.
+    # Terminating the helper must also stop detached command process groups.
     raise SystemExit(128 + signum)
-
-
-def framed(nonce):
-    if uuid.UUID(nonce).hex != nonce:
-        raise ValueError("Invalid RPC nonce")
-    stream = sys.stdin.buffer
-    output = sys.stdout.buffer
-
-    def send(kind, data=b""):
-        output.write(f"\nHARBOR_RPC {nonce} {kind} {len(data)}\n".encode())
-        output.write(data)
-        output.flush()
-
-    original = termios.tcgetattr(sys.stdin.fileno())
-    try:
-        # Announce readiness only after terminal echo and byte transformations
-        # are disabled. Credentials then travel as data, never shell input.
-        tty.setraw(sys.stdin.fileno())
-        send("READY")
-        header = stream.readline(256).decode("ascii").strip().split()
-        if len(header) != 4 or header[:3] != ["HARBOR_RPC", nonce, "REQUEST"]:
-            raise ValueError("Invalid RPC request header")
-        length = int(header[3])
-        if not 0 <= length <= MAX_BYTES * 2:
-            raise ValueError("RPC request exceeds frame limit")
-        data = stream.read(length)
-        if len(data) != length:
-            raise ValueError("Incomplete RPC request")
-        result = json.dumps(response(json.loads(data))).encode()
-        if len(result) > MAX_BYTES * 2:
-            raise ValueError("RPC response exceeds frame limit")
-        send("RESULT", result)
-    finally:
-        termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, original)
-    send("DONE")
 
 
 if __name__ == "__main__":
     for name in (signal.SIGHUP, signal.SIGTERM):
         signal.signal(name, interrupted)
-    if len(sys.argv) == 3 and sys.argv[1] == "--framed":
-        framed(sys.argv[2])
+    data = sys.stdin.buffer.read(MAX_BYTES * 2 + 1)
+    if len(data) > MAX_BYTES * 2:
+        result = {"error": "RPC request exceeds 256 MiB"}
     else:
-        print(json.dumps(response(json.loads(sys.stdin.buffer.read(MAX_BYTES * 2)))))
+        try:
+            result = response(json.loads(data))
+        except (ValueError, TypeError):
+            result = {"error": "Invalid RPC request"}
+    encoded = json.dumps(result).encode()
+    if len(encoded) > MAX_BYTES * 2:
+        encoded = b'{"error":"RPC response exceeds 256 MiB"}'
+    sys.stdout.buffer.write(encoded)
+    sys.stdout.buffer.flush()

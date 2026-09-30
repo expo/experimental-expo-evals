@@ -12,7 +12,7 @@ fi
 
 bundle_dir="$(cd "$(dirname "$0")" && pwd)"
 sandbox_root=/private/tmp/harbor
-deadline=$((SECONDS + 3300))
+expires_at=$(($(date +%s) + 3300))
 mkdir -p "$sandbox_root"
 
 # Real root aliases keep native Harbor commands and task scripts unchanged.
@@ -38,7 +38,21 @@ export PATH="$HOME/.local/bin:$PATH"
 curl -LsSf https://astral.sh/uv/0.12.18/install.sh | sh
 uv python install 3.12
 ln -s "$(uv python find 3.12)" /private/tmp/harbor-python
-cp "$bundle_dir/harbor_rpc.py" /private/tmp/harbor-rpc.py
+# Keep connection credentials and helper state outside ordinary agent files.
+# EAS grants the VM user sudo; the credential is scoped to this disposable trial.
+bridge_dir=/private/tmp/harbor-bridge
+sudo -n mkdir -m 700 "$bridge_dir"
+sudo -n install -m 600 "$bundle_dir/bridge.json" "$bridge_dir/config.json"
+sudo -n install -m 600 "$bundle_dir/harbor_rpc.py" "$bridge_dir/rpc.py"
+sudo -n install -m 600 "$bundle_dir/harbor_worker.py" "$bridge_dir/worker.py"
+rm "$bundle_dir/bridge.json"
+sudo -n /private/tmp/harbor-python - "$bridge_dir/config.json" "$expires_at" <<'PYTHON'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+config = json.loads(path.read_text())
+config["expires_at"] = min(config["expires_at"], int(sys.argv[2]))
+path.write_text(json.dumps(config))
+PYTHON
 
 # Image setup does not inherit credentials provided by the EAS control plane.
 cd /app
@@ -48,8 +62,5 @@ env -i HOME="$HOME" USER="$(id -un)" LOGNAME="$(id -un)" \
 printf '%s' "$PATH" > /private/tmp/harbor-path
 touch /private/tmp/harbor-ready
 
-while [ "$SECONDS" -lt "$deadline" ]; do
-  sleep 2
-done
-echo 'The Harbor sandbox reached its 55-minute lifetime.' >&2
-exit 1
+# This foreground workflow step owns the worker lifetime, independent of HTTP requests.
+exec sudo -n /private/tmp/harbor-python "$bridge_dir/worker.py" "$bridge_dir/config.json"

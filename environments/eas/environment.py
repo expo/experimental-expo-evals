@@ -1,8 +1,4 @@
-"""Harbor environment for one EAS Workflows macOS VM.
-
-Harbor stays on the controller. The EAS CLI supplies authenticated SSH; commands
-and file contents travel over its stdin, never through workflow inputs or argv.
-"""
+"""Harbor environment for an EAS macOS VM using outbound HTTPS."""
 
 from __future__ import annotations
 
@@ -14,6 +10,7 @@ import os
 import re
 import shutil
 import signal
+import secrets
 import tarfile
 import tempfile
 import time
@@ -24,30 +21,17 @@ from pathlib import Path
 from harbor.environments.base import BaseEnvironment, ExecResult
 from harbor.environments.capabilities import EnvironmentResourceCapabilities
 
+from .transport import Bridge, validate_url
+
 MAX_TRANSFER_BYTES = 128 * 1024 * 1024
-RPC_COMMAND = "sudo -n /private/tmp/harbor-python /private/tmp/harbor-rpc.py"
 TERMINAL_STATUSES = {"SUCCESS", "FAILURE", "CANCELED"}
 
 
-class _SSHConnectionError(RuntimeError):
-    """The relay rejected a connection before any request was submitted."""
-
-    def __init__(self, message: str, master=None):
-        super().__init__(message)
-        self.master = master
-
-
 class EASWorkflowEnvironment(BaseEnvironment):
-    def __init__(
-        self, *args, project_id: str | None = None, stage: str = "production",
-        ssh_idle_timeout_sec: int = 600, **kwargs
-    ):
+    def __init__(self, *args, project_id: str | None = None, stage: str = "production", **kwargs):
         if stage not in {"production", "staging"}:
             raise ValueError("EAS stage must be production or staging")
-        if type(ssh_idle_timeout_sec) is not int or not 0 <= ssh_idle_timeout_sec <= 3600:
-            raise ValueError("ssh_idle_timeout_sec must be an integer from 0 to 3600")
         self.stage = stage
-        self.ssh_idle_timeout_sec = ssh_idle_timeout_sec
         suffix = "_STAGING" if stage == "staging" else ""
         self._token_variable = "EXPO_TOKEN" + suffix
         self._project_variable = "EAS_PROJECT_ID" + suffix
@@ -55,14 +39,12 @@ class EASWorkflowEnvironment(BaseEnvironment):
         self.workflow_run_id: str | None = None
         self.workflow_job_id: str | None = None
         self._bundle: tempfile.TemporaryDirectory | None = None
-        self._identity_directory: tempfile.TemporaryDirectory | None = None
-        self._master_directory: tempfile.TemporaryDirectory | None = None
-        self._master_process: asyncio.subprocess.Process | None = None
-        self._master_readers: list[asyncio.Task] = []
-        self._master_diagnostics = bytearray()
-        self._master_lock = asyncio.Lock()
-        self._ready = False
-        self._requests_submitted = False
+        self._bridge: Bridge | None = None
+        self._bridge_registered = False
+        self._bridge_id = uuid.uuid4().hex
+        self._worker_token = secrets.token_urlsafe(32)
+        self._worker_url = ""
+        self._expires_at = 0
         super().__init__(*args, **kwargs)
 
     @staticmethod
@@ -75,7 +57,7 @@ class EASWorkflowEnvironment(BaseEnvironment):
         # The selected stage and project are checked in start(), before upload.
         if not any(os.environ.get(name) for name in ("EXPO_TOKEN", "EXPO_TOKEN_STAGING")):
             raise SystemExit("EAS Workflows requires EXPO_TOKEN or EXPO_TOKEN_STAGING")
-        for command in ("eas", "ssh", "ssh-keygen", "git"):
+        for command in ("eas", "git"):
             if not shutil.which(command):
                 raise SystemExit(f"EAS Workflows requires {command} on PATH")
 
@@ -114,6 +96,13 @@ class EASWorkflowEnvironment(BaseEnvironment):
         )
         (root / "bootstrap.sh").write_bytes(resources.joinpath("bootstrap.sh").read_bytes())
         (root / "harbor_rpc.py").write_bytes(resources.joinpath("rpc.py").read_bytes())
+        (root / "harbor_worker.py").write_bytes(resources.joinpath("worker.py").read_bytes())
+        config = root / "bridge.json"
+        config.write_text(json.dumps({
+            "url": self._worker_url, "token": self._worker_token,
+            "expires_at": self._expires_at,
+        }))
+        config.chmod(0o600)
         (root / "app.json").write_text(
             json.dumps(
                 {
@@ -132,7 +121,7 @@ class EASWorkflowEnvironment(BaseEnvironment):
         return root
 
     def _diagnostic(self, message: str, *details: str) -> str:
-        values = list(self._persistent_env.values())
+        values = [self._worker_token, *self._persistent_env.values()]
         values += [
             value
             for name, value in os.environ.items()
@@ -155,19 +144,6 @@ class EASWorkflowEnvironment(BaseEnvironment):
         summary = summary[:500]
         budget = (2000 - len(summary) - len(context)) // len(context)
         return "\n".join([summary, *(value[-budget:] for value in context)])
-
-    async def _prepare_identity(self) -> None:
-        # This is deliberately separate from the directory uploaded to EAS.
-        # The relay accepts this disposable SSH key alongside its session token;
-        # a hosted controller must not depend on someone's personal ~/.ssh keys.
-        self._identity_directory = tempfile.TemporaryDirectory(prefix="harbor-eas-ssh-")
-        await self._process(
-            [
-                "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "harbor",
-                "-f", str(Path(self._identity_directory.name) / "identity"),
-            ],
-            timeout=30,
-        )
 
     def _startup_failure(self, state: dict) -> str:
         errors = []
@@ -223,8 +199,8 @@ class EASWorkflowEnvironment(BaseEnvironment):
         data: bytes | None = None,
         check: bool = True,
     ) -> tuple[bytes, bytes, int]:
-        # Authentication stays on the controller. Never inherit model/judge keys
-        # into the EAS CLI; environment variables are applied by the remote RPC.
+        # Never inherit model/judge keys into the EAS CLI. The worker receives
+        # scoped environment variables through authenticated HTTPS requests.
         process = await asyncio.create_subprocess_exec(
             *arguments,
             cwd=self._bundle.name if self._bundle else None,
@@ -276,314 +252,97 @@ class EASWorkflowEnvironment(BaseEnvironment):
         config["expo"].update(owner=project["owner"], slug=project["slug"])
         config_path.write_text(json.dumps(config))
 
-    def _ssh_control_arguments(self) -> list[str]:
-        if not self._master_directory:
-            raise RuntimeError("EAS SSH master has not started")
-        return [
-            "ssh", "-F", "/dev/null", "-S", str(Path(self._master_directory.name) / "mux"),
-            "-o", "ControlMaster=no", "-o", "ProxyCommand=false", "-o", "BatchMode=yes",
-        ]
-
-    async def _ensure_master(self, *, timeout: float) -> None:
-        try:
-            async with asyncio.timeout(timeout):
-                async with self._master_lock:
-                    if self._master_process and self._master_process.returncode is None:
-                        return
-                    if self._ready or self._requests_submitted:
-                        raise RuntimeError(self._diagnostic(
-                            "EAS SSH connection was lost; submitted requests will not be replayed: "
-                            + self._master_diagnostics.decode("utf-8", "replace")
-                        ))
-                    await self._close_master()
-                    # A short absolute path stays below macOS's Unix socket limit.
-                    # EAS's token-bearing SSH config lives here until master exit.
-                    self._master_directory = tempfile.TemporaryDirectory(prefix="heas-", dir="/tmp")
-                    self._master_diagnostics.clear()
-                    try:
-                        self._master_process = await asyncio.create_subprocess_exec(
-                            "eas", "workflow:ssh", self.workflow_job_id,
-                            "-M", "-N", "-S", str(Path(self._master_directory.name) / "mux"),
-                            "-i", str(Path(self._identity_directory.name) / "identity"),
-                            "-o", "ControlPersist=no", "-o", "IdentitiesOnly=yes",
-                            "-o", "BatchMode=yes", "-o", "ConnectTimeout=30",
-                            "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2",
-                            cwd=self._bundle.name if self._bundle else None,
-                            env={**self._cli_environment(), "TMPDIR": self._master_directory.name},
-                            stdin=asyncio.subprocess.DEVNULL,
-                            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                            start_new_session=True,
-                        )
-
-                        async def collect(stream) -> None:
-                            while chunk := await stream.read(8192):
-                                self._master_diagnostics.extend(chunk)
-                                del self._master_diagnostics[:-2000]
-
-                        self._master_readers = [
-                            asyncio.create_task(collect(self._master_process.stdout)),
-                            asyncio.create_task(collect(self._master_process.stderr)),
-                        ]
-                        while True:
-                            if self._master_process.returncode is not None:
-                                await asyncio.gather(*self._master_readers)
-                                message = self._diagnostic(
-                                    "EAS SSH master exited before readiness: "
-                                    + self._master_diagnostics.decode("utf-8", "replace")
-                                )
-                                if "upstream unavailable" in message.lower():
-                                    raise _SSHConnectionError(message, self._master_process)
-                                raise RuntimeError(message)
-                            if (Path(self._master_directory.name) / "mux").exists():
-                                _, _, code = await self._process(
-                                    [*self._ssh_control_arguments(), "-O", "check", "harbor-eas.invalid"],
-                                    timeout=5, check=False,
-                                )
-                                if code == 0:
-                                    return
-                            await asyncio.sleep(0.05)
-                    except BaseException:
-                        await self._close_master()
-                        raise
-        except TimeoutError as error:
-            raise TimeoutError(self._diagnostic(
-                "EAS SSH master did not become ready before the connection timeout: "
-                + self._master_diagnostics.decode("utf-8", "replace")
-            )) from error
-
-    async def _close_master(self) -> None:
-        process = self._master_process
-        try:
-            if process and process.returncode is None:
-                try:
-                    _, _, code = await self._process(
-                        [*self._ssh_control_arguments(), "-O", "exit", "harbor-eas.invalid"],
-                        timeout=5, check=False,
-                    )
-                    if code == 0:
-                        await asyncio.wait_for(process.wait(), 5)
-                except (TimeoutError, OSError, RuntimeError):
-                    pass
-        finally:
-            # Cancellation during startup/shutdown must not orphan the master.
-            try:
-                if process and process.returncode is None:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    await process.wait()
-                if self._master_readers:
-                    await asyncio.gather(*self._master_readers, return_exceptions=True)
-            finally:
-                self._master_process = None
-                self._master_readers = []
-                if self._master_directory:
-                    self._master_directory.cleanup()
-                    self._master_directory = None
+    async def _register_bridge(self) -> None:
+        controller_url = os.environ.get("HARBOR_EAS_CONTROLLER_URL", "")
+        controller_token = os.environ.get("HARBOR_EAS_CONTROLLER_TOKEN", "")
+        public_url = os.environ.get("HARBOR_EAS_PUBLIC_URL", "")
+        if not all((controller_url, controller_token, public_url)):
+            raise ValueError("EAS HTTPS requires HARBOR_EAS_CONTROLLER_URL, HARBOR_EAS_CONTROLLER_TOKEN, and HARBOR_EAS_PUBLIC_URL from the hosted runner")
+        self._worker_url = validate_url(public_url) + "/" + self._bridge_id
+        self._bridge = Bridge(controller_url, controller_token)
+        self._expires_at = int(time.time()) + 3600
+        # Mark before sending: a lost response can still mean the session was created.
+        self._bridge_registered = True
+        await self._bridge.request("POST", "/sessions", {
+            "session_id": self._bridge_id, "worker_token": self._worker_token,
+            "ttl_sec": 3600,
+        })
 
     async def _rpc(self, request: dict, *, timeout: float = 180) -> dict:
+        if not self._bridge or not self._bridge_registered:
+            raise RuntimeError("EAS HTTPS bridge has not started")
+        request_id = uuid.uuid4().hex
+        base = f"/{self._bridge_id}"
+        path = f"{base}/requests/{request_id}"
         deadline = time.monotonic() + timeout
-        attempt = 0
-        while True:
-            try:
-                return await self._rpc_once(request, timeout=max(0, deadline - time.monotonic()))
-            except _SSHConnectionError as error:
-                attempt += 1
-                async with self._master_lock:
-                    if self._ready or self._requests_submitted or attempt == 3:
-                        raise
-                    if self._master_process is error.master:
-                        await self._close_master()
-                if deadline - time.monotonic() <= attempt:
-                    raise
-                self.logger.warning("EAS SSH connection failed before readiness; retrying: %s", error)
-                await asyncio.sleep(attempt)
-
-    async def _rpc_once(self, request: dict, *, timeout: float) -> dict:
-        if not self.workflow_job_id:
-            raise RuntimeError("EAS sandbox has not started")
-        if not self._identity_directory:
-            raise RuntimeError("EAS sandbox SSH identity has not been prepared")
-        nonce = uuid.uuid4().hex
-        payload = json.dumps(request).encode()
-        if len(payload) > MAX_TRANSFER_BYTES * 2:
-            raise ValueError("RPC request exceeds frame limit")
-        deadline = time.monotonic() + timeout
-        await self._ensure_master(timeout=timeout)
-        master = self._master_process
-        process = await asyncio.create_subprocess_exec(
-            *self._ssh_control_arguments(), "-tt", "harbor-eas.invalid",
-            cwd=self._bundle.name if self._bundle else None,
-            env=self._cli_environment(),
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE, start_new_session=True,
-        )
-        prefix = f"HARBOR_RPC {nonce} ".encode()
-        diagnostics = bytearray()
-        preamble = bytearray()
-
-        async def collect_stderr() -> None:
-            while chunk := await process.stderr.read(8192):
-                diagnostics.extend(chunk)
-                del diagnostics[:-2000]
-
-        stderr_task = asyncio.create_task(collect_stderr())
-
-        def diagnostic(error: object) -> str:
-            return self._diagnostic(
-                str(error),
-                preamble.decode("utf-8", "replace"),
-                diagnostics.decode("utf-8", "replace"),
-                self._master_diagnostics.decode("utf-8", "replace"),
+        await self._bridge.request("POST", path, request, timeout=min(30, timeout))
+        while time.monotonic() < deadline:
+            status, body = await self._bridge.request(
+                "GET", f"{base}/results/{request_id}",
+                timeout=min(30, max(0.1, deadline - time.monotonic())),
             )
-
-        async def frame(expected: str) -> bytes:
-            while True:
-                line = await process.stdout.readline()
-                if not line:
-                    # SSH may close stdout before its final stderr arrives.
-                    # Keep this wait inside the RPC deadline; the collector
-                    # must survive timeout cancellation so cleanup can drain it.
-                    await asyncio.shield(stderr_task)
-                    raise RuntimeError("EAS SSH closed before the RPC response")
-                header = line.rstrip(b"\r\n")
-                if not header.startswith(prefix):
-                    preamble.extend(line)
-                    del preamble[:-2000]
-                    continue
-                parts = header[len(prefix):].split()
-                if len(parts) != 2 or parts[0] != expected.encode():
-                    raise RuntimeError(f"EAS RPC ended before {expected}")
-                length = int(parts[1])
-                if not 0 <= length <= MAX_TRANSFER_BYTES * 2:
-                    raise ValueError("RPC response exceeds frame limit")
-                if expected != "RESULT" and length != 0:
-                    raise ValueError("Invalid RPC control frame")
-                return await process.stdout.readexactly(length)
-
-        submitted = False
-        try:
-            async with asyncio.timeout(max(0, deadline - time.monotonic())):
-                # Only this public bootstrap command goes through the shell.
-                # EXIT makes a missing helper fail promptly during image setup.
-                process.stdin.write(
-                    (
-                        f"{RPC_COMMAND} --framed {nonce}; "
-                        f"printf '\\nHARBOR_RPC {nonce} EXIT 0\\n'\n"
-                    ).encode()
-                )
-                await process.stdin.drain()
-                await frame("READY")
-                # Mark before write: even a partial write must never be replayed.
-                submitted = True
-                if request.get("op") != "ready":
-                    self._requests_submitted = True
-                process.stdin.write(
-                    f"HARBOR_RPC {nonce} REQUEST {len(payload)}\n".encode() + payload
-                )
-                await process.stdin.drain()
-                response = json.loads(await frame("RESULT"))
-                await frame("DONE")
-        except TimeoutError as error:
-            raise TimeoutError(diagnostic(
-                f"EAS SSH RPC timed out after {timeout:.3g}s"
-            )) from error
-        except (RuntimeError, ValueError, asyncio.IncompleteReadError) as error:
-            message = diagnostic(error)
-            if not submitted and "upstream unavailable" in message.lower():
-                raise _SSHConnectionError(message, master) from error
-            raise RuntimeError(message) from error
-        finally:
-            # This local mux client owns only its session channel. Closing it
-            # leaves the shared SSH transport and other commands alive.
-            if process.returncode is None:
+            if status == 200:
+                response = json.loads(body)
                 try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            await process.wait()
-            await stderr_task
-        if response.get("error"):
-            raise RuntimeError(self._diagnostic(f"EAS sandbox: {response['error']}"))
-        if request.get("op") == "ready" and response.get("ready"):
-            self._ready = True
-        return response
+                    await self._bridge.request("DELETE", path, timeout=5)
+                except (RuntimeError, TimeoutError):
+                    pass  # The session expiry also collects already-completed blobs.
+                if response.get("error"):
+                    raise RuntimeError(self._diagnostic(f"EAS sandbox: {response['error']}"))
+                return response
+            if status != 204:
+                raise RuntimeError(f"Unexpected EAS bridge response ({status})")
+            await asyncio.sleep(min(1, max(0, deadline - time.monotonic())))
+        raise TimeoutError(f"EAS HTTPS request timed out after {timeout:g}s")
 
     async def start(self, force_build: bool = False) -> None:
         if self.workflow_run_id:
             raise RuntimeError("EAS sandbox is already started")
-        self._ready = False
-        self._requests_submitted = False
         self._cli_environment()
+        readiness = None
         try:
+            await self._register_bridge()
             self._prepare_bundle()
-            await self._prepare_identity()
-            # Resolve the existing project's owner/slug into this temporary app
-            # config. --id never creates a project; --no-icon avoids mutations.
             await self._link_project()
-            # Upload only this generated source bundle. Never submit the user's
-            # repository or retry an ambiguous workflow creation response.
-            started = await self._cli(
-                "workflow:run", ".eas/workflows/harbor.yml", "--ssh",
-                "--ssh-idle-timeout", str(self.ssh_idle_timeout_sec),
-            )
+            started = await self._cli("workflow:run", ".eas/workflows/harbor.yml")
             self.workflow_run_id = started["id"]
             self.logger.info("EAS %s workflow: %s", self.stage, self.workflow_run_id)
-            deadline = time.monotonic() + self.task_env_config.build_timeout_sec
-            last_error: str | None = None
+            timeout = self.task_env_config.build_timeout_sec
+            deadline = time.monotonic() + timeout
+            readiness = asyncio.create_task(self._rpc({"op": "ready"}, timeout=timeout))
             while time.monotonic() < deadline:
+                done, _ = await asyncio.wait({readiness}, timeout=3)
+                if done:
+                    if readiness.result().get("ready"):
+                        return
+                    raise RuntimeError("EAS worker started before sandbox setup finished")
                 state = await self._cli("workflow:view", self.workflow_run_id)
                 if state.get("status") in TERMINAL_STATUSES:
-                    raise RuntimeError(
-                        self._startup_failure(state)
-                        + (f"; last SSH readiness failure: {last_error}" if last_error else "")
-                    )
-                job = next(
-                    (
-                        job
-                        for job in state.get("jobs", [])
-                        if job.get("key") == "sandbox"
-                    ),
-                    None,
-                )
-                if job and job.get("status") == "IN_PROGRESS":
+                    raise RuntimeError(self._startup_failure(state))
+                job = next((job for job in state.get("jobs", []) if job.get("key") == "sandbox"), None)
+                if job:
                     self.workflow_job_id = job["id"]
-                    # SSH may be ready before bootstrap has finished. Probe is
-                    # read-only and may be retried; commands/files never are.
-                    try:
-                        if (
-                            await self._rpc(
-                                {"op": "ready"},
-                                timeout=min(330, max(1, deadline - time.monotonic())),
-                            )
-                        ).get("ready"):
-                            return
-                    except (RuntimeError, json.JSONDecodeError, TimeoutError) as error:
-                        diagnostic = self._diagnostic(str(error))
-                        if diagnostic != last_error:
-                            self.logger.warning("EAS SSH readiness: %s", diagnostic)
-                        last_error = diagnostic
-                await asyncio.sleep(3)
-            raise TimeoutError(
-                "EAS workflow did not become ready before build_timeout_sec"
-                + (f": {last_error}" if last_error else "")
-            )
+            raise TimeoutError("EAS workflow did not become ready before build_timeout_sec")
         except BaseException:
             await asyncio.shield(self.stop(delete=True))
             raise
+        finally:
+            if readiness:
+                readiness.cancel()
+                await asyncio.gather(readiness, return_exceptions=True)
 
     async def stop(self, delete: bool = True) -> None:
         try:
             try:
-                await self._close_master()
+                if self._bridge and self._bridge_registered:
+                    await self._bridge.request("DELETE", f"/{self._bridge_id}", timeout=15)
+                    self._bridge_registered = False
             finally:
                 if self.workflow_run_id:
                     run_id = self.workflow_run_id
-                    await self._process(
-                        ["eas", "workflow:cancel", run_id, "--non-interactive"], timeout=60
-                    )
-                    # eas workflow:cancel can exit zero after a server-side error.
+                    state = await self._cli("workflow:view", run_id, timeout=30)
+                    if state.get("status") not in TERMINAL_STATUSES:
+                        await self._process(["eas", "workflow:cancel", run_id, "--non-interactive"], timeout=60)
                     for _ in range(10):
                         state = await self._cli("workflow:view", run_id, timeout=30)
                         if state.get("status") in TERMINAL_STATUSES:
@@ -592,16 +351,11 @@ class EASWorkflowEnvironment(BaseEnvironment):
                             break
                         await asyncio.sleep(2)
                     else:
-                        raise RuntimeError(
-                            f"EAS workflow cancellation was not confirmed: {run_id}"
-                        )
+                        raise RuntimeError(f"EAS workflow cancellation was not confirmed: {run_id}")
         finally:
             if self._bundle and not self.workflow_run_id:
                 self._bundle.cleanup()
                 self._bundle = None
-            if self._identity_directory and not self.workflow_run_id:
-                self._identity_directory.cleanup()
-                self._identity_directory = None
 
     async def exec(
         self,
@@ -627,7 +381,7 @@ class EASWorkflowEnvironment(BaseEnvironment):
                 timeout=timeout + 60,
             )
         except (asyncio.CancelledError, TimeoutError):
-            # Closing local SSH does not kill a detached remote process group.
+            # Cancel the remote command explicitly; HTTP requests are short-lived.
             # Cancel that command while retaining the VM for Harbor's verifier.
             try:
                 await asyncio.shield(
