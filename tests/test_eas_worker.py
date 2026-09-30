@@ -31,6 +31,7 @@ class Relay:
         self.closed = False
         self.status = None
         self.headers = []
+        self.user_agents = []
         relay = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -45,6 +46,7 @@ class Relay:
 
             def handle_request(self):
                 relay.headers.append(self.headers.get("Authorization"))
+                relay.user_agents.append(self.headers.get("User-Agent"))
                 if relay.status or relay.closed:
                     return self.answer(relay.status or 410)
                 path = urllib.parse.urlsplit(self.path)
@@ -157,6 +159,7 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(self.relay.results[identifier], {"stdout": "hello", "stderr": "warning", "return_code": 7})
         self.assertEqual(self.relay.uploads[identifier], 2)
         self.assertEqual(set(self.relay.headers), {"Bearer private-relay-token"})
+        self.assertEqual(set(self.relay.user_agents), {"expo-evals-worker/1.0"})
         self.assertFalse(self.errors)
 
     def test_cancellation_and_polling_continue_during_long_command(self):

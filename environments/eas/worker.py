@@ -80,7 +80,11 @@ class Client:
                 raise SessionClosed("Worker session expired")
             request = urllib.request.Request(
                 self.url + path, data=data, method=method,
-                headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json" if method == "POST" else "application/octet-stream"},
+                headers={
+                    "Authorization": "Bearer " + self.token,
+                    "Content-Type": "application/json" if method == "POST" else "application/octet-stream",
+                    "User-Agent": "expo-evals-worker/1.0",
+                },
             )
             try:
                 with self.opener.open(request, timeout=min(10, remaining)) as response:
