@@ -369,7 +369,7 @@ class EASWorkflowEnvironment(BaseEnvironment):
         timeout_sec: int | None = None,
         user: str | int | None = None,
     ) -> ExecResult:
-        timeout = timeout_sec if timeout_sec is not None else 3600
+        timeout = timeout_sec if timeout_sec is not None else self.timeout_sec
         command_id = str(uuid.uuid4())
         try:
             response = await self._rpc(

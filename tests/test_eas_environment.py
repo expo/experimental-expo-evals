@@ -199,6 +199,16 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.args[0], {"op": "cancel", "id": first.args[0]["id"]})
         adapter.stop.assert_not_called()
 
+    async def test_exec_uses_sandbox_lifetime_unless_command_timeout_is_explicit(self):
+        adapter = self.adapter(timeout_sec=7200)
+        adapter._rpc = AsyncMock(return_value={"return_code": 0})
+        await adapter.exec("claude --print task")
+        self.assertEqual(adapter._rpc.call_args.args[0]["timeout"], 7200)
+        self.assertEqual(adapter._rpc.call_args.kwargs["timeout"], 7260)
+        await adapter.exec("true", timeout_sec=100)
+        self.assertEqual(adapter._rpc.call_args.args[0]["timeout"], 100)
+        self.assertEqual(adapter._rpc.call_args.kwargs["timeout"], 160)
+
     async def test_cancel_failure_stops_vm(self):
         adapter = self.adapter()
         adapter._rpc = AsyncMock(
