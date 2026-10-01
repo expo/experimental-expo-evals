@@ -74,8 +74,16 @@ def main():
     (logs / "trajectory.txt").write_text(
         format_trajectory("/logs/agent/trajectory.json", max_tokens=6000)
     )
-    simulator_file = Path("/app/simulator-udid.txt")
-    simulator = simulator_file.read_text().strip() if simulator_file.exists() else "booted"
+    devices = command(
+        ["xcrun", "simctl", "list", "devices", "booted", "--json"], logs / "simulators.json", 30,
+    )
+    booted = json.loads((logs / "simulators.json").read_text()) if devices.get("exit_code") == 0 else {}
+    simulator = next(
+        (device["udid"] for runtime, devices in booted.get("devices", {}).items()
+         if ".iOS-" in runtime
+         for device in devices if device.get("state") == "Booted"),
+        "booted",
+    )
     runtime = {
         "scope": (
             "Verifier-owned commands, executed after the agent finished. The fixed Maestro flow "

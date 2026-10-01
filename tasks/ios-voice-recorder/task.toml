@@ -2,6 +2,7 @@ schema_version = "1.4"
 
 [metadata]
 display_name = "iOS Voice Recorder · Basic"
+default_sandbox = "eas-production"
 
 [[artifacts]]
 source = "/app"
@@ -18,4 +19,11 @@ timeout_sec = 600
 TYPESAFE_API_KEY = "${TYPESAFE_API_KEY}"
 
 [environment]
+skills_dir = "/app/.agents/skills"
 build_timeout_sec = 900
+
+[[environment.mcp_servers]]
+name = "argent"
+transport = "stdio"
+command = "argent"
+args = ["mcp"]

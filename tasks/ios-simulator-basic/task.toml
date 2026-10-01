@@ -2,6 +2,7 @@ schema_version = "1.4"
 
 [metadata]
 display_name = "iOS Simulator · Basic"
+default_sandbox = "eas-production"
 
 [[artifacts]]
 source = "/app/evidence"

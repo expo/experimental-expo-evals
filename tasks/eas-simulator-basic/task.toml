@@ -2,6 +2,7 @@ schema_version = "1.4"
 
 [metadata]
 display_name = "EAS Simulator · Basic"
+default_sandbox = "e2b"
 
 [[artifacts]]
 source = "/app"

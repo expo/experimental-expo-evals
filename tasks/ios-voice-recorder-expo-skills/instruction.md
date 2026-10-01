@@ -16,6 +16,6 @@ the bundle identifier `dev.expo.eval.voicerecorder`. Leave a standalone simulato
 build installed that opens without Metro. Exercise recording, saving, playback,
 and deletion, and save screenshots of both tabs in `/app/evidence`.
 
-Xcode, an iPhone simulator, and the Maestro CLI are available. The simulator UDID
-is in `/app/simulator-udid.txt`. Explain what you tested and any limits of testing
-microphone input or playback on a simulator.
+Xcode and Argent, including its skills, are available. Start a local iPhone
+simulator as needed. Explain what you tested and any limits of testing microphone
+input or playback on a simulator.

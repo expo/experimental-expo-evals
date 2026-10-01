@@ -124,8 +124,8 @@ uv run harbor run --env-file .env -c harbor.yaml -p tasks/eas-simulator-basic-ex
 ```
 
 The skills task installs Expo skills from commit
-`efa52f0a9d2176db75992736281c77da1b714fa3` into `/skills` during environment setup
-and declares `environment.skills_dir = "/skills"` in `task.toml`.
+`efa52f0a9d2176db75992736281c77da1b714fa3` with `npx skills` during environment setup
+and declares `environment.skills_dir = "/app/.agents/skills"` in `task.toml`.
 [Harbor registers these task skills](https://docs.harborframework.com/core-concepts/tasks/skills)
 with Claude Code or Codex. The baseline has no skills directory.
 
@@ -137,12 +137,15 @@ Harbor's per-skill runtime lock entries.
 The dashboard discovers tasks from Git. Select and run each task using the
 same commit, harness, model, and attempt count, then compare their results in Runs.
 The dashboard uses `metadata.display_name` in `task.toml` for task labels;
-folder names remain the task IDs. Harbor accepts this as ordinary metadata.
+folder names remain the task IDs. `metadata.default_sandbox` preselects `e2b`,
+`eas-production`, or `eas-staging` in the dashboard, with an optional override for
+each run. Harbor accepts these as ordinary metadata; the CLI still takes its
+provider from the job configuration.
 
 ## Local iOS tasks on EAS Workflows
 
 The local iOS tasks require macOS, Xcode, and a local iOS simulator.
-In the hosted dashboard, select **EAS production** and run the chosen task.
+The hosted dashboard defaults these tasks to **EAS production**.
 Harbor stays in the hosted runner; each trial starts a disposable EAS macOS job.
 The job runs the task's `environment/setup.sh`, then an outbound HTTPS worker.
 No SSH service, relay, inbound port, or persistent connection is required.
@@ -182,11 +185,13 @@ from the trace, with a verifier-owned file existence, size, and PNG-signature ch
 The screenshot is saved as a Harbor artifact for human inspection. No Maestro
 flow or source-quality assessment is included in this task.
 
-The voice-recorder tasks also come with and without Expo skills. Their setup
-installs a pinned Maestro CLI and boots an iPhone simulator.
-The verifier runs a fixed UI flow and supplies its output, app source, and agent
-trace to JEV. Screenshots are saved for human review; the pinned JEV adapter only
-accepts text. The flow checks recording controls and persistence, not audible
+Both voice-recorder tasks install Argent with its skills using `argent init`.
+The Expo-skills variant adds the pinned Expo skills with `npx skills`. Native
+Harbor `skills_dir` and `mcp_servers` register the installed skills and Argent
+with either harness. The agent starts the simulator as needed.
+The verifier installs its pinned Maestro CLI, runs the fixed UI flow on the
+booted simulator, and supplies its output, app source, and agent trace to JEV.
+Screenshots are saved for human review; the pinned JEV adapter only accepts text. The flow checks recording controls and persistence, not audible
 microphone or speaker quality.
 
 The skills task adds a required `expo-overview` usage criterion and reports
