@@ -12,7 +12,6 @@ fi
 
 bundle_dir="$(cd "$(dirname "$0")" && pwd)"
 sandbox_root=/private/tmp/harbor
-expires_at=$(($(date +%s) + 3300))
 mkdir -p "$sandbox_root"
 
 # Real root aliases keep native Harbor commands and task scripts unchanged.
@@ -46,13 +45,6 @@ sudo -n install -m 600 "$bundle_dir/bridge.json" "$bridge_dir/config.json"
 sudo -n install -m 600 "$bundle_dir/harbor_rpc.py" "$bridge_dir/rpc.py"
 sudo -n install -m 600 "$bundle_dir/harbor_worker.py" "$bridge_dir/worker.py"
 rm "$bundle_dir/bridge.json"
-sudo -n /private/tmp/harbor-python - "$bridge_dir/config.json" "$expires_at" <<'PYTHON'
-import json, pathlib, sys
-path = pathlib.Path(sys.argv[1])
-config = json.loads(path.read_text())
-config["expires_at"] = min(config["expires_at"], int(sys.argv[2]))
-path.write_text(json.dumps(config))
-PYTHON
 
 # Image setup does not inherit credentials provided by the EAS control plane.
 cd /app

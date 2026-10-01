@@ -235,6 +235,33 @@ class WorkerTests(unittest.TestCase):
         self.assertFalse((self.root / "must-not-exist").exists())
         self.assertFalse(self.errors)
 
+    def test_extended_lifetime_is_preserved_and_expiry_terminates_running_command(self):
+        now = time.time()
+        config = json.loads(self.config.read_text())
+        config["expires_at"] = now + 7200
+        self.worker.client = Client(config, self.worker.stop, allow_loopback=True)
+        self.assertEqual(self.worker.client.deadline, config["expires_at"])
+        with patch("environments.eas.worker.time.time", return_value=now + 3601):
+            self.assertEqual(self.worker.client.poll(), [])
+        self.relay.add(self.command("touch started; (sleep 2; touch must-not-exist) & wait"))
+        self.start_worker()
+        self.wait_for(lambda: (self.root / "started").exists())
+        with patch("environments.eas.worker.time.time", return_value=now + 7201):
+            self.thread.join(timeout=5)
+        self.assertFalse(self.thread.is_alive())
+        self.assertFalse(self.worker.processes)
+        time.sleep(2)
+        self.assertFalse((self.root / "must-not-exist").exists())
+        self.assertFalse(self.errors)
+
+    def test_worker_rejects_invalid_or_unbounded_expiry(self):
+        now = time.time()
+        config = json.loads(self.config.read_text())
+        for expiry in (None, True, "3600", -1, 0, float("nan"), float("inf"), 10 ** 400, now + 2 * 60 * 60 + 1):
+            with self.subTest(expiry=expiry), patch("environments.eas.worker.time.time", return_value=now):
+                with self.assertRaisesRegex(ValueError, "expiry"):
+                    Client({**config, "expires_at": expiry}, threading.Event(), allow_loopback=True)
+
     def test_second_helper_cannot_execute_same_session(self):
         with self.assertRaisesRegex(ValueError, "already owns"):
             Worker(self.config, allow_loopback=True)

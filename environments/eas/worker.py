@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import http.client
 import json
+import math
 import os
 import pathlib
 import re
@@ -19,6 +20,7 @@ import urllib.request
 
 CHUNK_BYTES = 4 * 1024 * 1024
 MAX_BYTES = 256 * 1024 * 1024
+MAX_TIMEOUT_SEC = 2 * 60 * 60
 IDENTIFIER = re.compile(r"[0-9a-f]{32}\Z")
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -68,7 +70,14 @@ class Client:
         self.token = config["token"]
         if not isinstance(self.token, str) or not self.token or "\n" in self.token or "\r" in self.token:
             raise ValueError("Invalid worker credential")
-        self.deadline = min(float(config["expires_at"]), time.time() + 55 * 60)
+        expires_at = config["expires_at"]
+        if (
+            type(expires_at) not in (int, float)
+            or not 0 < expires_at <= time.time() + MAX_TIMEOUT_SEC
+            or not math.isfinite(expires_at)
+        ):
+            raise ValueError("Worker expiry must be finite and no more than 2 hours from now")
+        self.deadline = expires_at
         self.stop = stop
         self.opener = urllib.request.build_opener(NoRedirect())
 

@@ -24,14 +24,18 @@ from harbor.environments.capabilities import EnvironmentResourceCapabilities
 from .transport import Bridge, validate_url
 
 MAX_TRANSFER_BYTES = 128 * 1024 * 1024
+MAX_TIMEOUT_SEC = 2 * 60 * 60
 TERMINAL_STATUSES = {"SUCCESS", "FAILURE", "CANCELED"}
 
 
 class EASWorkflowEnvironment(BaseEnvironment):
-    def __init__(self, *args, project_id: str | None = None, stage: str = "production", **kwargs):
+    def __init__(self, *args, project_id: str | None = None, stage: str = "production", timeout_sec: int = 3600, **kwargs):
         if stage not in {"production", "staging"}:
             raise ValueError("EAS stage must be production or staging")
+        if type(timeout_sec) is not int or not 0 < timeout_sec <= MAX_TIMEOUT_SEC:
+            raise ValueError(f"EAS timeout_sec must be an integer between 1 and {MAX_TIMEOUT_SEC}")
         self.stage = stage
+        self.timeout_sec = timeout_sec
         suffix = "_STAGING" if stage == "staging" else ""
         self._token_variable = "EXPO_TOKEN" + suffix
         self._project_variable = "EAS_PROJECT_ID" + suffix
@@ -260,12 +264,12 @@ class EASWorkflowEnvironment(BaseEnvironment):
             raise ValueError("EAS HTTPS requires HARBOR_EAS_CONTROLLER_URL, HARBOR_EAS_CONTROLLER_TOKEN, and HARBOR_EAS_PUBLIC_URL from the hosted runner")
         self._worker_url = validate_url(public_url) + "/" + self._bridge_id
         self._bridge = Bridge(controller_url, controller_token)
-        self._expires_at = int(time.time()) + 3600
+        self._expires_at = int(time.time()) + self.timeout_sec
         # Mark before sending: a lost response can still mean the session was created.
         self._bridge_registered = True
         await self._bridge.request("POST", "/sessions", {
             "session_id": self._bridge_id, "worker_token": self._worker_token,
-            "ttl_sec": 3600,
+            "ttl_sec": self.timeout_sec,
         })
 
     async def _rpc(self, request: dict, *, timeout: float = 180) -> dict:

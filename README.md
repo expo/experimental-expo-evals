@@ -157,8 +157,12 @@ Requests have stable IDs. The worker persists a claim before execution and the
 result before uploading it. Network retries reuse the same request and result;
 an uncertain operation after a worker restart fails instead of executing again.
 Transfers use 4 MiB chunks with SHA-256 checks. Cancellation remains available
-while agent commands run. The worker has a 55-minute maximum lifetime; Harbor
-closes its session and cancels the workflow after the trial.
+while agent commands run. `environment.kwargs.timeout_sec` controls the total EAS
+sandbox lifetime (default: 3600 seconds, maximum: 2 hours). The dashboard
+calculates it from the trial's setup, agent, and verifier budgets with cleanup time.
+This is separate from the task's native `[agent].timeout_sec`. EAS limits paid
+workflow jobs to two hours; free accounts normally have a 45-minute limit. Harbor
+closes the session and cancels the workflow after the trial.
 
 Production uses `EXPO_TOKEN` and `EAS_PROJECT_ID`. Our production project is
 `@mokosdavid/evals`, ID `2e4b45b5-8ed5-48d0-b5fe-2fcdaab8ad9a`.

@@ -81,6 +81,11 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "production or staging"):
             self.adapter(stage="unknown")
 
+    def test_invalid_lifetime_is_rejected(self):
+        for timeout in (0, -1, True, 1.5, "3600", None, 2 * 60 * 60 + 1):
+            with self.subTest(timeout=timeout), self.assertRaisesRegex(ValueError, "timeout_sec"):
+                self.adapter(timeout_sec=timeout)
+
     def test_diagnostics_preserve_cause_and_strip_terminal_controls_before_redaction(self):
         adapter = self.adapter()
         adapter._persistent_env["TASK_TOKEN"] = "private-task-token"
@@ -252,6 +257,27 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((root / "bridge.json").stat().st_mode & 0o777, 0o600)
             self.assertEqual(request.call_args.args[2]["worker_token"], config["token"])
             await adapter.stop()
+
+    async def test_extended_lifetime_reaches_relay_and_worker_and_still_cleans_up(self):
+        adapter = self.adapter(timeout_sec=7200)
+        with patch.dict(os.environ, {
+            "HARBOR_EAS_CONTROLLER_URL": "http://127.0.0.1:8080/eas",
+            "HARBOR_EAS_CONTROLLER_TOKEN": "controller-" + "x" * 40,
+            "HARBOR_EAS_PUBLIC_URL": "https://example.com/api/internal/eas/run-123",
+        }), patch("environments.eas.environment.Bridge.request", new_callable=AsyncMock) as request, patch("environments.eas.environment.time.time", return_value=1000):
+            await adapter._register_bridge()
+            root = adapter._prepare_bundle()
+            config = json.loads((root / "bridge.json").read_text())
+            self.assertEqual(config["expires_at"], 8200)
+            self.assertEqual(request.call_args.args[2]["ttl_sec"], 7200)
+            adapter.workflow_run_id = "workflow-id"
+            adapter._cli = AsyncMock(side_effect=[{"status": "IN_PROGRESS"}, {"status": "CANCELED"}])
+            adapter._process = AsyncMock()
+            await adapter.stop()
+            self.assertEqual(request.call_args.args[:2], ("DELETE", "/" + adapter._bridge_id))
+            self.assertEqual(adapter._process.call_args.args[0][1:3], ["workflow:cancel", "workflow-id"])
+            self.assertFalse(root.exists())
+            self.assertFalse(adapter._bridge_registered)
 
     async def test_start_uses_plain_workflow_and_cleans_up_after_completion(self):
         adapter = self.adapter()
