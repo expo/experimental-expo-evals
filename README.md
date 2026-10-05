@@ -5,7 +5,7 @@ for Expo SDK 57:
 
 - EAS Simulator: create a coffee timer, run it on EAS Simulator, and download a screenshot.
 - iOS Simulator: create a starter app, run it locally on an iOS simulator, and save a screenshot.
-- Agent CLI: open a prepared starter app using the generated agent-cli instructions.
+- Agent CLI: launch, debug, extend, and verify prepared apps using generated project instructions.
 - iOS voice recorder: build a native app with Record and All recordings tabs,
   then run it on a local iOS simulator inside an EAS Workflows macOS machine.
 
@@ -28,6 +28,9 @@ tasks/
   eas-simulator-basic-expo-skills/ # Same structure, adds skills in setup
   ios-simulator-basic/            # Starter app, local simulator, and screenshot
   agent-cli-ios-basic/            # Prepared app; agent-cli adoption and local runtime checks
+  agent-cli-ios-repair/           # Repair a crashing cart and incorrect totals
+  agent-cli-ios-persistence/      # Add SQLite storage and verify notes survive reloads
+  agent-cli-ios-navigation/       # Build and verify a form and dynamic routes
   ios-voice-recorder/             # Local iOS app and simulator verification
   ios-voice-recorder-expo-skills/  # Same app task, with Expo skills
 environments/
@@ -203,36 +206,58 @@ app-quality criteria directly when comparing the two variants.
 
 ## Agent CLI adoption
 
-`agent-cli-ios-basic` defaults to EAS production. Setup creates an SDK 57 starter,
-runs `bunx @expo/agent-cli agents:setup` for Claude Code and Codex, then installs
-Argent and its skills. `--no-plugins` skips plugin installation because Harbor
-installs the harness later; generated `AGENTS.md`, Claude's import, and package
-skill discovery still run. The agent starts in the app directory. The prompt
-asks only for a running starter and a screenshot, so the generated project
-instructions supply the agent-cli guidance.
+All four tasks default to EAS production. Setup creates an SDK 57 app, applies
+any task fixture, runs `bunx @expo/agent-cli agents:setup` for Claude Code and
+Codex, and installs Argent. `--no-plugins` skips plugin installation because
+Harbor installs the harness later; generated instructions and package skill
+discovery still run. The agent starts in `/app/expo-app`. Prompts describe the
+requested outcome; the generated project instructions introduce agent-cli.
 
-The verifier runs agent-cli `smoke --ios --no-start` against the app left running,
-checks the agent's screenshot file, and passes those results plus the trace to
-JEV. Agent tool-call arguments are saved separately, without trace truncation.
+| Task | Workflow covered | Independent verifier evidence |
+| --- | --- | --- |
+| `agent-cli-ios-basic` | Start and inspect an app | No-start smoke check and screenshot file |
+| `agent-cli-ios-repair` | Diagnose runtime/type errors and validate a repair | Preserved products/config, TypeScript, smoke, and three cart totals after button actions |
+| `agent-cli-ios-persistence` | Install an SDK-compatible package and test state across reloads | SQLite installation, two fresh notes, verified reloads, selective deletion, and TypeScript |
+| `agent-cli-ios-navigation` | Build and inspect navigation and form interactions | Two generated form inputs, back navigation, distinct deep links, TypeScript, and runtime errors |
+
+Fixture source lives in each task's `environment/app/`, as a project-root
+overlay. Its short `setup.sh` replaces the fresh starter's `src/` and copies the
+fixture. EAS uploads these ordinary environment files alongside the script.
+Tasks remain independent native Harbor directories; there is no generator or
+inheritance layer.
+
+Verifiers use agent-cli against the app the agent left running. They never
+start the app to rescue a failed attempt. Full command outputs, screenshots,
+and tool-call arguments are saved as artifacts. JEV receives compact runtime
+evidence, source where needed, and a formatted trace.
+
 JEV grades CLI adoption on a 0–9 scale: subtract one point for each agent-invoked
 legacy Expo or EAS CLI command, down to zero. Setup commands, quoted text, the
 verifier, and subprocesses run internally by agent-cli are excluded. Argent and
 native simulator tools remain allowed. Meaningful agent-cli use and a passing
 runtime check are required for any adoption credit.
 
-CLI adoption has weight 2; simulator validation and screenshot evidence have
-weight 1 each. The total is `(2 × adoption / 9 + simulator + screenshot) / 4`.
-Command classification and the adoption score are JEV assessments, not a process
-monitor or an exact deterministic counter. Keep the judge output and tool calls
-when interpreting deductions. JEV receives text, not screenshot pixels.
+CLI adoption has weight 2. Other criteria grade the task outcome, type safety,
+screenshot evidence and, for the new tasks, useful verification and avoidable
+detours. Each `rubric.toml` defines its weights and native weighted mean. Compare
+the adoption criterion directly across tasks; their overall scores measure
+different outcomes. Scores remain JEV assessments, not an exact command counter.
+Runtime tree/tap/type checks read React state and invoke handlers; they do not
+test physical touches, keyboard behavior or visual layout. JEV receives text,
+not screenshot pixels.
 
-Run from the dashboard or use the existing native EAS configuration:
+Run from the dashboard, or select all four with Harbor's native task filter:
 
 ```sh
-uv run harbor run --env-file .env -c harbor-ios.yaml -p tasks/agent-cli-ios-basic
+uv run harbor run --env-file .env -c harbor-ios.yaml -p tasks -i 'agent-cli-ios-*' --dry-run
+uv run harbor run --env-file .env -c harbor-ios.yaml -p tasks -i 'agent-cli-ios-*'
 ```
 
-The local CLI command also needs the HTTPS controller credentials described above.
+For one task, use `-p tasks/agent-cli-ios-repair` instead of the dataset path and
+filter. These commands use one attempt and one concurrent trial. Local EAS runs
+also need the HTTPS controller credentials described above. This set covers
+local development; cloud builds, deployment, native rebuild decisions and
+package-skill discovery need separate tasks.
 
 ## Results
 

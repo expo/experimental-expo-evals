@@ -11,6 +11,7 @@ import re
 import shutil
 import signal
 import secrets
+import stat
 import tarfile
 import tempfile
 import time
@@ -24,6 +25,9 @@ from harbor.environments.capabilities import EnvironmentResourceCapabilities
 from .transport import Bridge, validate_url
 
 MAX_TRANSFER_BYTES = 128 * 1024 * 1024
+# Task setup bundles contain source fixtures, not installed dependencies or builds.
+MAX_ENVIRONMENT_FILE_BYTES = 1024 * 1024
+MAX_ENVIRONMENT_BYTES = 16 * 1024 * 1024
 MAX_TIMEOUT_SEC = 2 * 60 * 60
 TERMINAL_STATUSES = {"SUCCESS", "FAILURE", "CANCELED"}
 
@@ -86,12 +90,36 @@ class EASWorkflowEnvironment(BaseEnvironment):
         root = Path(self._bundle.name).resolve()
         environment = root / "environment"
         environment.mkdir()
-        setup = self.environment_dir / "setup.sh"
-        if setup.is_symlink():
-            raise ValueError("Environment source cannot be a symlink: setup.sh")
-        if setup.stat().st_size > 1024 * 1024:
-            raise ValueError("Environment source is too large: setup.sh")
-        shutil.copy2(setup, environment / "setup.sh")
+        total_bytes = 0
+        excluded = {".git", "node_modules", ".venv", "__pycache__", "Dockerfile", "workflow.yml"}
+        if self.environment_dir.is_symlink():
+            raise ValueError("Environment source cannot be a symlink: environment")
+        for directory, directories, filenames in os.walk(self.environment_dir):
+            source_dir = Path(directory)
+            # Preserve the setup-only bundle's exclusions, and never upload
+            # local credentials, repository metadata, or installed dependencies.
+            for name in list(directories) + filenames:
+                if name in excluded or name == ".env" or name.startswith(".env."):
+                    if name in directories:
+                        directories.remove(name)
+                    continue
+                source = source_dir / name
+                relative = source.relative_to(self.environment_dir)
+                info = source.lstat()
+                if stat.S_ISLNK(info.st_mode):
+                    raise ValueError(f"Environment source cannot be a symlink: {relative}")
+                destination = environment / relative
+                if stat.S_ISDIR(info.st_mode):
+                    destination.mkdir()
+                elif stat.S_ISREG(info.st_mode):
+                    if info.st_size > MAX_ENVIRONMENT_FILE_BYTES:
+                        raise ValueError(f"Environment source is too large: {relative}")
+                    total_bytes += info.st_size
+                    if total_bytes > MAX_ENVIRONMENT_BYTES:
+                        raise ValueError("Environment sources exceed the 16 MiB bundle limit")
+                    shutil.copy2(source, destination)
+                else:
+                    raise ValueError(f"Environment source must be a regular file or directory: {relative}")
         resources = files(__package__)
         workflow_dir = root / ".eas" / "workflows"
         workflow_dir.mkdir(parents=True)

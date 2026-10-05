@@ -1,0 +1,30 @@
+schema_version = "1.4"
+
+[metadata]
+display_name = "Agent CLI · Persistent notes"
+default_sandbox = "eas-production"
+
+[[artifacts]]
+source = "/app"
+destination = "app"
+exclude = ["**/node_modules/**", "**/.git/**", "**/.env*", "**/.expo/**", "**/.npm/**", "**/ios/**", "**/android/**", "**/build/**", "**/DerivedData/**", "**/*.app/**", "**/*.log"]
+
+[agent]
+timeout_sec = 1800
+
+[verifier]
+timeout_sec = 900
+
+[verifier.env]
+TYPESAFE_API_KEY = "${TYPESAFE_API_KEY}"
+
+[environment]
+build_timeout_sec = 900
+workdir = "/app/expo-app"
+skills_dir = "/app/expo-app/.agents/skills"
+
+[[environment.mcp_servers]]
+name = "argent"
+transport = "stdio"
+command = "argent"
+args = ["mcp"]

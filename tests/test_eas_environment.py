@@ -144,6 +144,12 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         (self.environment / ".env").write_text("SECRET=not-for-upload")
         (self.environment / "Dockerfile").write_text("FROM node:24")
         (self.environment / "workflow.yml").write_text("UNTRUSTED_WORKFLOW=not-for-upload")
+        app = self.environment / "app"
+        app.mkdir()
+        (app / ".env.local").write_text("SECRET=not-for-upload")
+        for name in (".git", "node_modules", ".venv", "__pycache__"):
+            (app / name).mkdir()
+            (app / name / "ignored").write_text("SECRET=not-for-upload")
         adapter = self.adapter()
         root = adapter._prepare_bundle()
         self.assertEqual(
@@ -151,8 +157,9 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             {p.name for p in (root / "environment").iterdir()},
-            {"setup.sh"},
+            {"setup.sh", "app"},
         )
+        self.assertEqual(list((root / "environment/app").iterdir()), [])
         self.assertEqual(
             (root / ".eas/workflows/harbor.yml").read_bytes(),
             files("environments.eas").joinpath("workflow.yml").read_bytes(),
@@ -174,6 +181,30 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await adapter.stop()
         self.assertFalse(root.exists())
 
+    async def test_bundle_preserves_nested_fixtures_relative_to_setup(self):
+        fixture = self.environment / "app/app/(tabs)/index.tsx"
+        fixture.parent.mkdir(parents=True)
+        fixture.write_text("export default function Screen() { return null; }\n")
+        (self.environment / "setup.sh").write_text(
+            '#!/bin/bash\nset -euo pipefail\n'
+            'source_dir="$(cd "$(dirname "$0")" && pwd)"\n'
+            'cat "$source_dir/app/app/(tabs)/index.tsx"\n'
+        )
+        adapter = self.adapter()
+        try:
+            root = adapter._prepare_bundle()
+            self.assertEqual(
+                (root / "environment/app/app/(tabs)/index.tsx").read_text(),
+                fixture.read_text(),
+            )
+            result = subprocess.run(
+                ["bash", str(root / "environment/setup.sh")],
+                cwd=self.root, capture_output=True, text=True, check=True,
+            )
+            self.assertEqual(result.stdout, fixture.read_text())
+        finally:
+            await adapter.stop()
+
     async def test_bundle_rejects_symlinked_setup(self):
         (self.root / "outside.sh").write_text("must not be copied")
         (self.environment / "setup.sh").unlink()
@@ -182,6 +213,49 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         try:
             with self.assertRaisesRegex(ValueError, "cannot be a symlink"):
                 adapter._prepare_bundle()
+        finally:
+            await adapter.stop()
+
+    async def test_bundle_rejects_nested_symlinks_and_special_files(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "fixture.tsx").write_text("must not be copied")
+        app = self.environment / "app"
+        app.mkdir()
+        for name, target in (("file", outside / "fixture.tsx"), ("directory", outside)):
+            with self.subTest(name=name):
+                link = app / name
+                link.symlink_to(target)
+                adapter = self.adapter()
+                try:
+                    with self.assertRaisesRegex(ValueError, f"cannot be a symlink: app/{name}"):
+                        adapter._prepare_bundle()
+                finally:
+                    await adapter.stop()
+                    link.unlink()
+        os.mkfifo(app / "pipe")
+        adapter = self.adapter()
+        try:
+            with self.assertRaisesRegex(ValueError, "must be a regular file or directory: app/pipe"):
+                adapter._prepare_bundle()
+        finally:
+            await adapter.stop()
+
+    async def test_bundle_limits_individual_files_and_total_source_size(self):
+        (self.environment / "large.tsx").write_bytes(b"x" * 33)
+        adapter = self.adapter()
+        try:
+            with patch("environments.eas.environment.MAX_ENVIRONMENT_FILE_BYTES", 32):
+                with self.assertRaisesRegex(ValueError, "source is too large: large.tsx"):
+                    adapter._prepare_bundle()
+        finally:
+            await adapter.stop()
+        (self.environment / "second.tsx").write_bytes(b"x" * 33)
+        adapter = self.adapter()
+        try:
+            with patch("environments.eas.environment.MAX_ENVIRONMENT_BYTES", 64):
+                with self.assertRaisesRegex(ValueError, "bundle limit"):
+                    adapter._prepare_bundle()
         finally:
             await adapter.stop()
 

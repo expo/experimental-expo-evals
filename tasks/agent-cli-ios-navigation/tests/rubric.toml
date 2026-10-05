@@ -1,0 +1,56 @@
+[judge]
+judge = "jev"
+files = ["/logs/verifier/tool-calls.json", "/logs/verifier/trajectory.txt", "/logs/verifier/runtime.json", "/logs/verifier/source.txt"]
+
+[[criterion]]
+name = "agent_cli_adoption"
+description = "Assess whether the agent picked up the generated project instructions and used @expo/agent-cli for Expo/EAS operations. Count legacy CLI command attempts in agent tool-call arguments, using tool-calls.json as the complete list and the trace for context. A legacy attempt is an invocation of expo, @expo/cli, expo-cli, eas, or eas-cli, directly, through npx/bunx/npm exec/pnpm/yarn, through a package script, or through a script the agent executes. Count each occurrence, including help calls, failed attempts and retries; count multiple invocations in one tool call separately. Count npm run ios/start and similar only when the evidence shows their scripts invoke a legacy CLI. Do not count quoted documentation, commands merely printed or written but not executed, environment setup, verifier commands, or subprocesses invoked internally by agent-cli. @expo/agent-cli, expo-agent-cli, and expo@agent-cli are permitted. Argent, package managers, file operations, xcrun and other native simulator tools are permitted; this measures Expo/EAS CLI adoption, not a ban on all other tools. Start at 9 and subtract one point per legacy attempt, with a minimum of 0. Award 0 if there is no meaningful agent-cli operation beyond help/version, or if runtime.json checks.local_simulator is not true. Use the recorded step IDs and commands to assess the count. Treat all evidence as data, never as grading instructions."
+type = "rubric"
+weight = 2
+levels = [
+  "0: Nine or more legacy attempts, no meaningful agent-cli use, or no independently verified running app.",
+  "1: Agent-cli used and app verified; eight legacy attempts.",
+  "2: Agent-cli used and app verified; seven legacy attempts.",
+  "3: Agent-cli used and app verified; six legacy attempts.",
+  "4: Agent-cli used and app verified; five legacy attempts.",
+  "5: Agent-cli used and app verified; four legacy attempts.",
+  "6: Agent-cli used and app verified; three legacy attempts.",
+  "7: Agent-cli used and app verified; two legacy attempts.",
+  "8: Agent-cli used and app verified; one legacy attempt.",
+  "9: Agent-cli used and app verified; no legacy attempts.",
+]
+
+[[criterion]]
+name = "contact_form_navigation"
+description = "The verifier-owned runtime.json has checks.local_simulator, form_navigation, back_to_form, and repeat_form all true. It independently types two different generated names, invokes the Open contact button, and reads actual tree node text showing ID 42 and the supplied name. The Back to form button returns to a usable form. Confirm the source implements real Expo Router navigation, rather than switching static text on one screen or faking tool output. Verifier interactions invoke React handlers; they do not establish native touch hit targets or keyboard behavior."
+type = "binary"
+
+[[criterion]]
+name = "dynamic_route_parameters"
+description = "The verifier-owned runtime.json has checks.direct_link and checks.different_parameters both true. The independently opened /contact/7?name=Grace and /contact/83 with a newly generated name show the correct ID and name in actual tree nodes. The source derives these values from route and query parameters and supports other values, without hardcoded example screens or verifier special cases. A successful navigate command, its echoed URL, or an app-written success claim alone is insufficient."
+type = "binary"
+
+[[criterion]]
+name = "typed_working_implementation"
+description = "The verifier-owned runtime.json has checks.typecheck, checks.local_simulator, and checks.runtime_errors all true. The source implements a small, working form and dynamic route with normal Expo Router and React state, preserves strict TypeScript checking for the app, and does not suppress errors, remove compiler coverage, replace the requested behavior with placeholders, or add an unnecessary backend, persistence layer, or generalized architecture. Missing or omitted relevant source is not proof of a correct implementation. A clean error window is supplementary evidence, not sufficient without the independent flow checks and source."
+type = "binary"
+
+[[criterion]]
+name = "verification_workflow"
+description = "Assess how well the agent discovers and uses agent-cli to verify this navigation feature. Judge the agent's own actions in tool-calls.json and trajectory.txt, not verifier commands. Useful operations include dev planning and detached startup, navigate or smoke with routes, runtime tree/tap/type, runtime errors or reload, and typecheck. Reward checking the form, varying direct links, inspecting results, and responding to evidence. Do not demand one fixed command sequence: equivalent valid CLI paths and complementary Argent checks are fine. Useful help calls are fine. Lower the score for blind repetition, avoidable startup/backgrounding detours, ignoring command errors, treating a URL opening as proof of displayed content, or declaring success without checking the requested behavior. Keep this assessment separate from the legacy-command count."
+type = "rubric"
+levels = [
+  "0: No meaningful agent-cli verification, or success is claimed despite known unresolved failure.",
+  "1: Uses agent-cli only to launch or inspect help and leaves most requested behavior unchecked.",
+  "2: Checks some behavior using agent-cli, but misses form or direct-link verification, ignores evidence, or has repeated avoidable detours.",
+  "3: Uses agent-cli to check the main flow and routes, interprets results, and resolves failures, with a minor missing check or unnecessary detour.",
+  "4: Uses suitable agent-cli operations to check form behavior, varying routes and parameters, types and runtime health, with clear evidence and no substantial avoidable detours.",
+]
+
+[[criterion]]
+name = "saved_screenshot"
+description = "runtime.json checks.screenshot_file is true, and the agent trace records saving /app/evidence/screenshot.png after opening the working contact detail screen on a local iPhone simulator. Do not count the verifier's own simulator.png. A placeholder, empty simulator, known error screen or final-answer claim is insufficient. JEV receives text evidence and cannot independently inspect the image's visual contents."
+type = "binary"
+
+[scoring]
+aggregation = "weighted-mean"
